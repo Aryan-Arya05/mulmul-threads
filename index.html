@@ -377,7 +377,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.12-13';
+const APP_VERSION = '2026.11.12-14';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -710,7 +710,7 @@ function addPending(fileList){
   S.pending = S.pending || [];
   for(const f of fileList){
     if(S.pending.length >= 5){ toast('Up to 5 files per message'); break; }
-    if(f.size > 26214400){ toast(f.name + ' is larger than 25 MB'); continue; }
+    if(f.size > 104857600){ toast(f.name + ' is larger than 100 MB'); continue; }
     if(!f.size) continue; S.pending.push(f);
   }
   paintPend(); $('#mbox')?.focus();
@@ -1110,7 +1110,7 @@ const A = {
   drivePicked: el => { const f = { name: el.dataset.name, url: el.dataset.url }; $('#dov')?.remove(); if(S.driveCb && f.url) S.driveCb(f); },
   driveOpen: (el, e) => { e.preventDefault(); (S.drivePath = S.drivePath || []).push({ id: el.dataset.id, name: el.dataset.name }); render(); },
   driveUp: () => { (S.drivePath || []).pop(); render(); },
-  attachChat: () => { modal('Attach', `<label class="choice"><span style="font-size:22px">📱</span><span><b>Photo or file from this device</b><br><span class="sm mut">Up to 5 files, 25 MB each. Only people in this conversation can open them.</span></span><input type="file" id="devfile" multiple hidden></label>
+  attachChat: () => { modal('Attach', `<label class="choice"><span style="font-size:22px">📱</span><span><b>Photo or file from this device</b><br><span class="sm mut">Up to 5 files, 100 MB each. Only people in this conversation can open them.</span></span><input type="file" id="devfile" multiple hidden></label>
       <button type="button" class="choice" data-act="attachDrive"><span style="font-size:22px">📁</span><span><b>From Google Drive</b><br><span class="sm mut">Shares a link to a file in your Drive.</span></span></button>`, null, { noFocus:true });
     $('#devfile').addEventListener('change', e => { const fl = [...e.target.files]; closeModal(); addPending(fl); }); },
   attachDrive: () => { closeModal(); drivePick(f => { const b = $('#mbox'); if(!b) return; b.value = (b.value ? b.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; b.dispatchEvent(new Event('input')); b.focus(); }); },
@@ -1212,10 +1212,10 @@ const A = {
       return; }
     const tl = isAdmin() ? S.teams : myTeams(); const fol = S.view === 'files' && S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
     const preset = S.view === 'files' && S.fileTeam && S.fileTeam !== 'org' && tl.some(t => t.id === S.fileTeam) ? S.fileTeam : '';
-    modal('Upload files', `<label>Files (up to 50 MB each)</label><input type="file" name="file" required multiple>
+    modal('Upload files', `<label>Files (up to 100 MB each)</label><input type="file" name="file" required multiple>
       ${fol ? `<p class="sm mut">These go into the folder “${esc(fol.name)}”, visible to ${fol.team_id ? esc(team(fol.team_id)?.name || 'the team') : 'everyone in the company'}.</p>` : `<label>Who can see them</label><select name="team">${teamOpts(preset, 'Everyone in the company', tl)}</select>`}`, async f => {
       const files = f.getAll('file').filter(x => x && x.size); if(!files.length) throw new Error('Choose at least one file');
-      const big = files.find(x => x.size > 52428800); if(big) throw new Error(big.name + ' is larger than 50 MB');
+      const big = files.find(x => x.size > 104857600); if(big) throw new Error(big.name + ' is larger than 100 MB');
       const tid = fol ? fol.team_id : (f.get('team') || null);
       for(const file of files){
         const path = `${tid || 'org'}/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
