@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mulmul Threads</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2e2523">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Threads">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -162,6 +169,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
 const SB_URL = 'https://zcnthnhdwdtxalijrcik.supabase.co';
 const SB_KEY = 'sb_publishable_FWivcWTl1QYFEXl5A6akMA_V2hbQcSD';
 const GOOGLE_SIGNIN = true;
+const VAPID_PUBLIC = 'BB6wM1DzOpN2ZUcNcVMCk7nwYKvu9D1Caz0_rYoF-rsPKfhWFQwvSMgC1e9GUD0xZiziRyAd7eyDrVlAQIcsDlk';
 const sb = supabase.createClient(SB_URL, SB_KEY);
 
 // ---------- state + helpers ----------
@@ -271,8 +279,9 @@ async function boot(session){
     S.me = me;
     if(!me.active){ renderPending(); return; }
     await loadBase(); renderShell(); subscribe();
-    await Promise.all([loadChannels(), loadNotifs()]);
+    await Promise.all([loadChannels(), loadNotifs(), syncPush(false)]);
     route();
+    try { const q = new URLSearchParams(location.search).get('open'); if(q){ history.replaceState(null, '', location.pathname + location.hash); openLink(q); } } catch(e){}
   } finally { booting = false; }
 }
 async function loadBase(){
@@ -331,7 +340,7 @@ function paintBell(){ const n = S.notifs.filter(x => !x.read_at).length; const b
 function paintPanel(){
   let el = $('#npanel'); if(!S.panel){ if(el) el.remove(); return; }
   if(!el){ el = document.createElement('div'); el.id = 'npanel'; el.className = 'npanel'; document.body.append(el); }
-  el.innerHTML = `<div class="row" style="padding:6px 8px"><h3 class="grow">Notifications</h3><button class="btn sm ghost" data-act="readAll">Mark all read</button></div>` +
+  el.innerHTML = `<div class="row" style="padding:6px 8px"><h3 class="grow">Notifications</h3>${pushState() === 'off' ? '<button class="btn sm" data-act="enablePush">Turn on alerts</button>' : pushState() === 'on' ? '<button class="btn sm ghost" data-act="disablePush">Alerts on ✓</button>' : ''}<button class="btn sm ghost" data-act="readAll">Mark all read</button></div>` +
     (S.notifs.map(n => `<div class="nt ${n.read_at ? '' : 'un'}" data-act="openNotif" data-id="${n.id}"><b>${esc(n.title)}</b>
       <div class="sm">${esc(n.body || '')}</div><div class="sm mut">${fmtDT(n.created_at)}</div></div>`).join('') || '<div class="empty">Nothing yet</div>');
 }
@@ -341,6 +350,49 @@ function openLink(link){
   else if(k === 'task') go('tasks', id);
   else if(k === 'event') go('calendar');
   else if(k === 'admin' && isAdmin()){ S.adminTab = 'users'; go('admin'); }
+}
+
+// ---------- phone / desktop alerts ----------
+const canSW = 'serviceWorker' in navigator && location.protocol === 'https:';
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const pushSupported = () => canSW && 'PushManager' in window && 'Notification' in window;
+function pushState(){ // on | off | blocked | ios-install | unsupported
+  if(!pushSupported()) return isIOS && !isStandalone() ? 'ios-install' : 'unsupported';
+  if(Notification.permission === 'denied') return 'blocked';
+  return Notification.permission === 'granted' && S.pushOn ? 'on' : 'off';
+}
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+function vapidKey(){ const p = VAPID_PUBLIC.replace(/-/g, '+').replace(/_/g, '/'); const raw = atob(p + '='.repeat((4 - p.length % 4) % 4)); return Uint8Array.from(raw, c => c.charCodeAt(0)); }
+async function syncPush(ask){
+  if(!pushSupported()) return false;
+  try {
+    const reg = await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready;
+    if(ask && Notification.permission === 'default') await Notification.requestPermission();
+    if(Notification.permission !== 'granted') return false;
+    let sub = await reg.pushManager.getSubscription();
+    if(!sub){ if(!ask) return false; sub = await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: vapidKey() }); }
+    const { error } = await sb.rpc('save_push_subscription', { p_endpoint: sub.endpoint, p_p256dh: b64u(sub.getKey('p256dh')), p_auth: b64u(sub.getKey('auth')) });
+    if(error) throw error; S.pushOn = true; return true;
+  } catch(x){ console.error(x); if(ask) toast('Could not turn on alerts: ' + (x.message || x)); return false; }
+}
+async function dropPush(){
+  try { if(!canSW) return; const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && await reg.pushManager.getSubscription();
+    if(sub){ await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint); await sub.unsubscribe(); } } catch(x){ console.error(x); }
+  S.pushOn = false;
+}
+function alertsCard(){
+  const st = pushState();
+  if(st === 'on' || st === 'unsupported') return '';
+  const msg = st === 'ios-install' ? 'To get alerts on iPhone: tap the Share button in Safari, choose <b>Add to Home Screen</b>, then open Threads from your home screen and turn alerts on.'
+    : st === 'blocked' ? 'Alerts are blocked for this site. Allow notifications in your browser or phone settings, then reload.'
+    : 'Get an alert on this device for new messages, task reminders and meeting invites, even when Threads is closed.';
+  return `<div class="card" style="margin-bottom:14px;border-color:var(--acc2);background:#fbf1ea"><div class="row wrap"><div class="grow" style="min-width:200px"><b>Turn on alerts</b><div class="sm">${msg}</div></div>
+    ${st === 'off' ? '<button class="btn pri" data-act="enablePush">Turn on alerts</button>' : ''}</div></div>`;
+}
+if(canSW){
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', e => { if(e.data && 'open' in e.data && S.me && S.me.active) openLink(e.data.open); });
 }
 
 // ---------- home ----------
@@ -356,7 +408,7 @@ VIEWS.home = async el => {
   const unread = S.channels.filter(c => c.unread > 0);
   const hr = now.getHours();
   el.innerHTML = `<h1 style="margin-bottom:16px">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}, ${esc(S.me.full_name.split(' ')[0])}</h1>
-  <div class="grid g2">
+  ${alertsCard()}<div class="grid g2">
     <div class="card"><div class="row"><h3 class="grow">My open tasks</h3><button class="btn sm" data-act="newTask">+ Task</button></div>
       ${(tk.data || []).map(t => `<div class="item" data-act="openTask" data-id="${t.id}"><div class="grow"><div>${esc(t.title)}</div>${dueTxt(t)}</div>${prioPill(t.priority)}</div>`).join('') || '<div class="empty">Nothing pending. Nice.</div>'}</div>
     <div class="card"><div class="row"><h3 class="grow">Today</h3><button class="btn sm" data-act="newEvent">+ Meeting</button></div>
@@ -713,7 +765,9 @@ function teamMembersModal(id){
 // ---------- actions ----------
 const A = {
   closeModal, reload: () => location.reload(),
-  signOut: async (el, e) => { e.preventDefault(); await sb.auth.signOut(); },
+  signOut: async (el, e) => { e.preventDefault(); await dropPush(); await sb.auth.signOut(); },
+  enablePush: async () => { const ok = await syncPush(true); if(ok) toast('Alerts are on for this device'); if(S.view === 'home') render(); paintPanel(); },
+  disablePush: async () => { await dropPush(); toast('Alerts turned off on this device'); paintPanel(); if(S.view === 'home') render(); },
   authSwitch: (el, e) => { e.preventDefault(); authMode = authMode === 'in' ? 'up' : 'in'; renderAuth(); },
   google: () => sb.auth.signInWithOAuth({ provider:'google', options:{ redirectTo: location.origin + location.pathname } }),
   go: el => go(el.dataset.v),
