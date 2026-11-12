@@ -179,6 +179,8 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
 #splash.hide{opacity:0;pointer-events:none}
 @keyframes splashIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){#splash,#splash span{transition:none;animation:none;opacity:1}}
+.ev.google{border-left-color:#4285f4}
+#dov{z-index:55}
 #upd{position:fixed;top:0;left:0;right:0;z-index:70;background:var(--hl-bg);color:var(--hl-ink);padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:center;font-weight:500;box-shadow:0 2px 12px #0003}
 #vtitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .acct{display:flex;align-items:center;gap:7px;padding:4px 10px 4px 5px}
@@ -352,6 +354,7 @@ async function boot(session){
     await loadBase(); renderShell(); subscribe();
     await Promise.all([loadChannels(), loadNotifs(), syncPush(false)]); checkUpdate();
     route();
+    if(pendingG){ const rt = pendingG; pendingG = null; finishGConnect(rt); }
     try { const q = new URLSearchParams(location.search).get('open'); if(q){ history.replaceState(null, '', location.pathname + location.hash); openLink(q); } } catch(e){}
   } finally { booting = false; }
 }
@@ -363,7 +366,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.12-8';
+const APP_VERSION = '2026.11.12-9';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -507,6 +510,73 @@ if(canSW){
   navigator.serviceWorker.addEventListener('message', e => { if(e.data && 'open' in e.data && S.me && S.me.active) openLink(e.data.open); });
 }
 
+// ---------- Google Calendar + Drive ----------
+let pendingG = null;
+const G = { token:null, exp:0 };
+const GSCOPES = 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive';
+const gOn = () => !!(S.me && S.me.google_connected);
+async function gfn(body){
+  const { data, error } = await sb.functions.invoke('google', { body });
+  if(error){ let m = error.message; try { const j = await error.context.json(); if(j && j.error) m = j.error; } catch(x){} throw new Error(m); }
+  if(data && data.error) throw new Error(data.error); return data;
+}
+async function gtoken(){
+  if(G.token && Date.now() < G.exp) return G.token;
+  const dd = await gfn({ action:'token' });
+  if(!dd.connected){ S.me.google_connected = false; throw new Error('Google is not connected. Connect it from the Account menu.'); }
+  G.token = dd.access_token; G.exp = Date.now() + ((dd.expires_in || 3000) - 120) * 1000; return G.token;
+}
+async function gapi(url, o={}){
+  const t = await gtoken();
+  const headers = { Authorization: 'Bearer ' + t, ...(typeof o.body === 'string' ? { 'Content-Type':'application/json' } : {}), ...(o.headers || {}) };
+  const r = await fetch(url.startsWith('http') ? url : 'https://www.googleapis.com' + url, { ...o, headers });
+  if(r.status === 204) return null;
+  const j = await r.json().catch(() => ({}));
+  if(!r.ok){ const e = new Error((j.error && j.error.message) || ('Google error ' + r.status)); e.status = r.status; throw e; }
+  return j;
+}
+function gConnect(){
+  sb.auth.signInWithOAuth({ provider:'google', options:{ redirectTo: SITE_URL, scopes: GSCOPES, queryParams:{ access_type:'offline', prompt:'consent', login_hint: S.me.email } } });
+}
+async function finishGConnect(rt){
+  try { const dd = await gfn({ action:'connect', refresh_token: rt });
+    G.token = dd.access_token; G.exp = Date.now() + ((dd.expires_in || 3000) - 120) * 1000;
+    S.me.google_connected = true; toast('Google Calendar and Drive connected'); render();
+  } catch(x){ modal('Google could not be connected', `<p>${esc(x.message || String(x))}</p>`, null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="gConnect">Try again</button>' }); }
+}
+function googleCard(what){
+  if(gOn()) return '';
+  return `<div class="card" style="margin-bottom:14px"><div class="row wrap"><div class="grow" style="min-width:200px"><b>Connect Google ${what || 'Calendar and Drive'}</b>
+    <div class="sm mut">See your Google Calendar here, add Meet links to meetings, and work with Drive files, using your ${esc(S.me.email)} account.</div></div>
+    <button class="btn pri" data-act="gConnect">Connect Google</button></div></div>`;
+}
+async function gCalEvents(from, to){
+  const j = await gapi(`/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(from.toISOString())}&timeMax=${encodeURIComponent(to.toISOString())}&singleEvents=true&orderBy=startTime&maxResults=250`);
+  return (j.items || []).filter(x => x.status !== 'cancelled' && x.start).map(x => ({ id:'g:' + x.id, gid:x.id, kind:'google', title:x.summary || '(No title)',
+    starts_at: x.start.dateTime || (x.start.date + 'T00:00:00'), ends_at: x.end.dateTime || (x.end.date + 'T00:00:00'), allDay: !!x.start.date,
+    location:x.location || '', meet:x.hangoutLink || '', html:x.htmlLink || '', description:x.description || '', organizer:(x.organizer && x.organizer.email) || '',
+    guests:(x.attendees || []).map(a => a.email), event_attendees:[], created_by:null }));
+}
+const driveId = v => { v = (v || '').trim(); if(!v) return null; const m = /folders\/([\w-]{10,})/.exec(v) || /[?&]id=([\w-]{10,})/.exec(v) || /^([\w-]{10,})$/.exec(v); return m ? m[1] : null; };
+const fmtSize = b => !b ? '' : b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+let dpTimer = null;
+function drivePick(cb){
+  if(!gOn()){ modal('Connect Google first', '<p>Attaching Drive files needs your Google account connected.</p>', null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="gConnect">Connect Google</button>' }); return; }
+  S.driveCb = cb; $('#dov')?.remove();
+  const ov = document.createElement('div'); ov.className = 'ov'; ov.id = 'dov';
+  ov.innerHTML = `<div class="modal"><div class="row"><h2 class="grow">Attach from Google Drive</h2><button type="button" class="btn ghost" data-act="driveClose">✕</button></div>
+    <input id="dq" placeholder="Search your Drive by file name…" style="margin-top:10px"><div id="dres" style="margin-top:8px;min-height:120px"><div class="empty">Loading recent files…</div></div>
+    <p class="sm mut">This shares a link. People need access to the file in Google Drive to open it.</p></div>`;
+  document.body.append(ov); ov.addEventListener('mousedown', e => { if(e.target === ov) ov.remove(); });
+  const run = async () => { const term = $('#dq').value.trim().replace(/['\\]/g, ' ');
+    try { const j = await gapi(`/drive/v3/files?q=${encodeURIComponent((term ? `name contains '${term}' and ` : '') + 'trashed=false')}${term ? '' : '&orderBy=viewedByMeTime%20desc'}&pageSize=25&fields=files(id,name,mimeType,webViewLink,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+      if(!$('#dres')) return;
+      $('#dres').innerHTML = (j.files || []).map(f => `<div class="item" data-act="drivePicked" data-url="${esc(f.webViewLink || '')}" data-name="${esc(f.name)}"><div class="grow"><div>${f.mimeType === 'application/vnd.google-apps.folder' ? '📁 ' : ''}${esc(f.name)}</div><div class="sm mut">${f.modifiedTime ? 'Modified ' + fmtDay(f.modifiedTime) : ''}</div></div></div>`).join('') || '<div class="empty">No files found</div>';
+    } catch(x){ if($('#dres')) $('#dres').innerHTML = `<div class="empty">${esc(x.message)}</div>`; } };
+  $('#dq').addEventListener('input', () => { clearTimeout(dpTimer); dpTimer = setTimeout(run, 350); }); $('#dq').focus(); run();
+}
+const fileScope = () => { const sc = S.fileTeam; const root = sc === 'org' ? S.org.drive_folder_id : sc ? (team(sc) || {}).drive_folder_id : null; return { root, label: sc === 'org' ? 'Company-wide' : sc ? (team(sc) || {}).name : '' }; };
+
 // ---------- home ----------
 VIEWS.home = async el => {
   head('Home');
@@ -520,7 +590,7 @@ VIEWS.home = async el => {
   const unread = S.channels.filter(c => c.unread > 0);
   const hr = now.getHours();
   el.innerHTML = `<h1 style="margin-bottom:16px">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}, ${esc(S.me.full_name.split(' ')[0])}</h1>
-  ${alertsCard()}<div class="grid g2">
+  ${alertsCard()}${googleCard()}<div class="grid g2">
     <div class="card"><div class="row"><h3 class="grow">My open tasks</h3><button class="btn sm" data-act="newTask">+ Task</button></div>
       ${(tk.data || []).map(t => `<div class="item" data-act="openTask" data-id="${t.id}"><div class="grow"><div>${esc(t.title)}</div>${dueTxt(t)}</div>${prioPill(t.priority)}</div>`).join('') || '<div class="empty">Nothing pending. Nice.</div>'}</div>
     <div class="card"><div class="row"><h3 class="grow">Today</h3><button class="btn sm" data-act="newEvent">+ Meeting</button></div>
@@ -572,7 +642,7 @@ async function openChan(id){
       ${c.kind === 'announcement' && canPost ? '<button class="btn sm" data-act="readers">Read by</button>' : ''}
       ${c.kind !== 'dm' && c.is_private ? '<button class="btn sm" data-act="members">Members</button>' : ''}</div>
     <div class="msgs" id="msgs"></div>
-    ${canPost ? `<form class="comp" id="comp"><div class="mlist" id="mlist" hidden></div><textarea rows="1" id="mbox" placeholder="Message ${esc(chanName(c))} — type @ to mention"></textarea><button class="btn pri">Send</button></form>`
+    ${canPost ? `<form class="comp" id="comp"><div class="mlist" id="mlist" hidden></div><button type="button" class="btn" data-act="attachChat" title="Attach a file from Google Drive" aria-label="Attach from Google Drive">📎</button><textarea rows="1" id="mbox" placeholder="Message ${esc(chanName(c))} — type @ to mention"></textarea><button class="btn pri">Send</button></form>`
       : '<div class="comp mut sm">Only admins and team heads can post announcements.</div>'}`;
   const { data, error } = await sb.from('messages').select('*').eq('channel_id', id).order('created_at', { ascending:false }).limit(100);
   if(fail(error) || S.chan !== id) return;
@@ -661,7 +731,7 @@ async function taskModal(id, preset={}){
   const canDel = t && (t.created_by === S.uid || isAdmin());
   modal(t ? 'Task' : 'New task', `
     <label>Title</label><input name="title" required maxlength="300" value="${esc(v.title || '')}">
-    <label>Details</label><textarea name="description" rows="3">${esc(v.description || '')}</textarea>
+    <label class="row">Details<span class="grow"></span><a href="#" data-act="attachTask" style="font-weight:500">📎 Attach from Drive</a></label><textarea name="description" rows="3">${esc(v.description || '')}</textarea>
     <div class="row wrap"><div class="grow"><label>Assign to</label><select name="assignee_id">${peopleOpts(v.assignee_id, 'Unassigned')}</select></div>
       <div class="grow"><label>Team</label><select name="team_id">${teamOpts(v.team_id, 'No team')}</select></div></div>
     <div class="row wrap"><div class="grow"><label>Status</label><select name="status">${opts(Object.entries(statusLabel).map(([id,name]) => ({id,name})), v.status)}</select></div>
@@ -688,18 +758,25 @@ VIEWS.calendar = async el => {
   const ws = S.weekStart, we = new Date(ws); we.setDate(we.getDate() + 7);
   const { data, error } = await sb.from('events').select('*, event_attendees(user_id,response)').lt('starts_at', we.toISOString()).gt('ends_at', ws.toISOString()).order('starts_at');
   if(fail(error)) return; S.events = data || [];
-  const who = S.calWho; const list = S.events.filter(e => !who || e.created_by === who || e.event_attendees.some(a => a.user_id === who));
+  const who = S.calWho; let gerr = ''; S.gevents = [];
+  if(gOn() && (!who || who === S.uid)){
+    try { const known = new Set(S.events.map(e => e.google_event_id).filter(Boolean)); S.gevents = (await gCalEvents(ws, we)).filter(g => !known.has(g.gid)); } catch(x){ gerr = x.message; }
+  }
+  if(S.view !== 'calendar') return;
+  const list = S.events.filter(e => !who || e.created_by === who || e.event_attendees.some(a => a.user_id === who)).concat(S.gevents).sort((a,b) => d(a.starts_at) - d(b.starts_at));
   const last = new Date(we); last.setDate(last.getDate() - 1);
   let days = '';
   for(let i = 0; i < 7; i++){
     const day = new Date(ws); day.setDate(day.getDate() + i); const nx = new Date(day); nx.setDate(nx.getDate() + 1);
     const evs = list.filter(e => d(e.starts_at) < nx && d(e.ends_at) > day);
     days += `<div class="day ${sameDay(day, new Date()) ? 'today' : ''}"><div class="dl">${fmtDay(day)}</div><div>${evs.map(e => {
+      if(e.kind === 'google') return `<div class="ev google" data-act="openGEvent" data-id="${esc(e.id)}"><div class="row"><b class="grow">${esc(e.title)}</b><span class="pill gray">Google</span></div>
+        <div class="sm mut">${e.allDay ? 'All day' : fmtTime(e.starts_at) + ' – ' + fmtTime(e.ends_at)}${e.guests.length ? ' · ' + e.guests.length + ' guests' : ''}${e.meet ? ' · Meet' : ''}</div></div>`;
       const mine = e.event_attendees.find(a => a.user_id === S.uid);
       return `<div class="ev ${e.kind}" data-act="openEvent" data-id="${e.id}"><div class="row"><b class="grow">${esc(e.title)}</b>${e.is_private ? '<span class="pill gray">Private</span>' : ''}${mine ? `<span class="pill ${mine.response === 'yes' ? 'ok' : mine.response === 'no' ? 'bad' : 'warn'}">${mine.response === 'pending' ? 'Reply needed' : mine.response}</span>` : ''}</div>
         <div class="sm mut">${fmtTime(e.starts_at)} – ${fmtTime(e.ends_at)} · ${esc(nm(e.created_by))}${e.kind === 'meeting' ? ' · ' + (e.event_attendees.length + 1) + ' people' : ' · blocked'}</div></div>`; }).join('') || '<span class="mut sm">—</span>'}</div></div>`;
   }
-  el.innerHTML = `<div class="row wrap" style="margin-bottom:10px"><button class="btn sm" data-act="week" data-d="-1">←</button><button class="btn sm" data-act="week" data-d="0">This week</button><button class="btn sm" data-act="week" data-d="1">→</button>
+  el.innerHTML = `${googleCard('Calendar')}${gerr ? `<div class="card sm" style="margin-bottom:10px;color:var(--bad)">Google Calendar could not be loaded: ${esc(gerr)}</div>` : ''}<div class="row wrap" style="margin-bottom:10px"><button class="btn sm" data-act="week" data-d="-1">←</button><button class="btn sm" data-act="week" data-d="0">This week</button><button class="btn sm" data-act="week" data-d="1">→</button>
     <b class="grow wk">${fmtDay(ws)} – ${fmtDay(last)}</b>
     <select style="width:auto" data-chg="calWho">${opts([{id:S.uid, name:'My calendar'}].concat(people().filter(p => p.id !== S.uid).map(p => ({id:p.id, name:p.full_name}))), who, 'Everyone')}</select></div>
     <div class="card">${days}</div>`;
@@ -715,7 +792,8 @@ function eventModal(kind){
       <label>Agenda</label><textarea name="description" rows="2"></textarea>
       <label>Invite people</label>${pickList('att')}
       <label>Or invite a whole team</label><select name="team_id">${teamOpts('', 'No team')}</select>` : ''}
-    <label style="display:flex;gap:8px;align-items:center;font-weight:400;color:var(--ink)"><input type="checkbox" name="is_private"> Private (only invitees and founders can see it)</label>`,
+    <label style="display:flex;gap:8px;align-items:center;font-weight:400;color:var(--ink)"><input type="checkbox" name="is_private"> Private (only invitees and founders can see it)</label>
+    ${gOn() ? `<p class="sm mut">${kind === 'meeting' ? 'This also goes into Google Calendar: attendees get a Google invite, and a Meet link is added if you leave the location empty.' : 'This also blocks the time in your Google Calendar.'}</p>` : ''}`,
     async f => {
       const s = fromInput(f.get('starts_at')), e = fromInput(f.get('ends_at'));
       if(d(e) <= d(s)) throw new Error('End time must be after the start time');
@@ -727,6 +805,8 @@ function eventModal(kind){
         const { data: ov } = await sb.from('events').select('title, created_by, starts_at, ends_at, event_attendees(user_id,response)').lt('starts_at', e).gt('ends_at', s);
         const busy = new Set(); const all = [S.uid, ...att];
         (ov || []).forEach(x => all.forEach(u => { if(x.created_by === u || x.event_attendees.some(a => a.user_id === u && a.response !== 'no')) busy.add(u); }));
+        if(gOn()){ try { const fb = await gapi('/calendar/v3/freeBusy', { method:'POST', body: JSON.stringify({ timeMin: s, timeMax: e, items: all.map(u => ({ id: P(u).email })) }) });
+          all.forEach(u => { const c = fb.calendars && fb.calendars[P(u).email]; if(c && c.busy && c.busy.length) busy.add(u); }); } catch(x){ console.warn('free/busy check failed', x); } }
         if(busy.size){ warned = true; $('#mok').textContent = 'Schedule anyway';
           throw new Error('Clash: ' + [...busy].map(u => u === S.uid ? 'You' : nm(u)).join(', ') + ' already ' + (busy.size > 1 ? 'have' : (busy.has(S.uid) ? 'have' : 'has')) + ' something at this time. Change the time, or press “Schedule anyway”.'); }
       }
@@ -734,7 +814,15 @@ function eventModal(kind){
         description: (f.get('description') || '').trim() || null, team_id: tid, is_private: !!f.get('is_private'), created_by: S.uid }).select().single();
       if(error) throw error;
       if(att.length){ const r = await sb.from('event_attendees').insert(att.map(u => ({ event_id: ev.id, user_id: u }))); if(r.error) throw r.error; }
-      toast(kind === 'block' ? 'Time blocked' : 'Meeting scheduled'); S.weekStart = monday(s); if(S.view === 'calendar' || S.view === 'home') render();
+      let gnote = '';
+      if(gOn()){ try {
+          const gb = { summary: ev.title, description: ev.description || undefined, location: ev.location || undefined, start:{ dateTime: s }, end:{ dateTime: e },
+            attendees: att.map(u => ({ email: P(u).email })), visibility: ev.is_private ? 'private' : 'default' };
+          if(kind === 'meeting' && !ev.location) gb.conferenceData = { createRequest:{ requestId: ev.id, conferenceSolutionKey:{ type:'hangoutsMeet' } } };
+          const g = await gapi('/calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all', { method:'POST', body: JSON.stringify(gb) });
+          await sb.from('events').update({ google_event_id: g.id, meet_link: g.hangoutLink || null }).eq('id', ev.id); gnote = ' and added to Google Calendar';
+        } catch(x){ gnote = ', but Google Calendar failed: ' + x.message; } }
+      toast((kind === 'block' ? 'Time blocked' : 'Meeting scheduled') + gnote); S.weekStart = monday(s); if(S.view === 'calendar' || S.view === 'home') render();
     }, { ok: kind === 'block' ? 'Block' : 'Schedule', wide:true });
 }
 function openEvent(id){
@@ -743,7 +831,7 @@ function openEvent(id){
   const link = e.location && /^https?:\/\//.test(e.location) ? `<a href="${esc(e.location)}" target="_blank" rel="noopener">${esc(e.location)}</a>` : esc(e.location || '');
   modal(e.title, `<p><b>${fmtDT(e.starts_at)} – ${sameDay(e.starts_at, e.ends_at) ? fmtTime(e.ends_at) : fmtDT(e.ends_at)}</b><br>
     <span class="mut">${e.kind === 'block' ? 'Blocked by' : 'Organised by'} ${esc(nm(e.created_by))}${e.team_id ? ' · ' + esc(team(e.team_id)?.name || '') : ''}</span></p>
-    ${link ? `<p>${link}</p>` : ''}${e.description ? `<p style="white-space:pre-wrap">${esc(e.description)}</p>` : ''}
+    ${e.meet_link ? `<p><a class="btn pri" href="${esc(e.meet_link)}" target="_blank" rel="noopener" style="text-decoration:none">Join with Google Meet</a></p>` : ''}${link ? `<p>${link}</p>` : ''}${e.description ? `<p style="white-space:pre-wrap">${esc(e.description)}</p>` : ''}
     ${e.event_attendees.length ? `<label>Invited</label>${e.event_attendees.map(a => `<div class="row" style="padding:3px 0"><span class="grow">${esc(nm(a.user_id))}</span><span class="pill ${a.response === 'yes' ? 'ok' : a.response === 'no' ? 'bad' : 'gray'}">${a.response}</span></div>`).join('')}` : ''}
     ${mine ? `<label>Your reply</label><div class="row">${['yes','maybe','no'].map(r => `<button type="button" class="btn ${mine.response === r ? 'pri' : ''}" data-act="rsvp" data-id="${e.id}" data-r="${r}">${r[0].toUpperCase() + r.slice(1)}</button>`).join('')}</div>` : ''}`,
     null, { extra: `${e.kind === 'meeting' ? `<button type="button" class="btn" data-act="eventNotes" data-id="${e.id}">Meeting notes</button>` : ''}${own ? `<button type="button" class="btn danger" data-act="delEvent" data-id="${e.id}">Delete</button>` : ''}` });
@@ -771,7 +859,7 @@ function openNote(id){
   $('#ned').innerHTML = `<div class="row wrap"><button class="btn sm back" data-act="noteBack">←</button>
       ${own ? `<select id="nvis" style="width:auto">${opts([{id:'private',name:'Private to me'},{id:'team',name:'Shared with a team'},{id:'org',name:'Whole company'}], n.visibility)}</select>
       <select id="nteam" style="width:auto" ${n.visibility === 'team' ? '' : 'hidden'}>${teamOpts(n.team_id, 'Choose team', tl)}</select>` : `<span class="pill gray">${n.visibility === 'team' ? esc(team(n.team_id)?.name || 'Team') : 'Company-wide'} · by ${esc(nm(n.owner_id))}</span>`}
-      <span class="grow"></span><span class="sm mut" id="nsaved"></span>${own || isAdmin() ? `<button class="btn sm danger" data-act="delNote" data-id="${n.id}">Delete</button>` : ''}</div>
+      <span class="grow"></span><span class="sm mut" id="nsaved"></span>${can ? '<button class="btn sm" data-act="attachNote">📎 Drive</button>' : ''}${own || isAdmin() ? `<button class="btn sm danger" data-act="delNote" data-id="${n.id}">Delete</button>` : ''}</div>
     <input class="ttl" id="nttl" value="${esc(n.title)}" placeholder="Untitled" ${can ? '' : 'readonly'}>
     <textarea id="nbody" placeholder="Write here…" ${can ? '' : 'readonly'}>${esc(n.body)}</textarea>`;
   if(!can) return;
@@ -793,11 +881,27 @@ async function newNote(preset={}){
 // ---------- files ----------
 VIEWS.files = async el => {
   head('Files', '<button class="btn pri" data-act="upload">Upload</button>');
+  const scopeSel = `<select style="width:auto" data-chg="fileTeam">${opts([{id:'org',name:'Company-wide'}].concat(S.teams.map(t => ({id:t.id,name:t.name}))), S.fileTeam, 'All files I can access')}</select>`;
+  const fsc = fileScope();
+  if(fsc.root){
+    S.drivePath = S.drivePath || []; const cur = S.drivePath.length ? S.drivePath[S.drivePath.length - 1].id : fsc.root;
+    const bar = `<div class="row wrap" style="margin-bottom:12px">${scopeSel}${S.drivePath.length ? '<button class="btn sm" data-act="driveUp">← Back</button>' : ''}
+      <b class="grow">${esc(fsc.label)}${S.drivePath.map(x => ' › ' + esc(x.name)).join('')}</b><a class="btn sm" href="https://drive.google.com/drive/folders/${esc(cur)}" target="_blank" rel="noopener" style="text-decoration:none">Open in Google Drive</a></div>`;
+    if(!gOn()){ el.innerHTML = bar + `<div class="card"><p>This space keeps its files in Google Drive.</p></div>` + googleCard('Drive'); return; }
+    let rows = '';
+    try { const j = await gapi(`/drive/v3/files?q=${encodeURIComponent(`'${cur}' in parents and trashed=false`)}&fields=files(id,name,mimeType,size,modifiedTime,webViewLink,owners(displayName))&orderBy=folder,name&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+      if(S.view !== 'files') return;
+      rows = (j.files || []).map(f => `<tr><td>${f.mimeType === 'application/vnd.google-apps.folder' ? `<a href="#" data-act="driveOpen" data-id="${esc(f.id)}" data-name="${esc(f.name)}">📁 ${esc(f.name)}</a>` : `<a href="${esc(f.webViewLink || '#')}" target="_blank" rel="noopener">${esc(f.name)}</a>`}</td>
+        <td>${esc((f.owners && f.owners[0] && f.owners[0].displayName) || '')}</td><td>${f.modifiedTime ? fmtDay(f.modifiedTime) : ''}</td><td>${fmtSize(+f.size)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">This folder is empty</td></tr>';
+    } catch(x){ rows = `<tr><td colspan="4" class="empty">${x.status === 404 || x.status === 403 ? 'You do not have access to this folder in Google Drive. Ask the team head or an admin to share it with ' + esc(S.me.email) + '.' : esc(x.message)}</td></tr>`; }
+    el.innerHTML = bar + `<div class="card tw"><table><tr><th>Name</th><th>Owner</th><th>Modified</th><th>Size</th></tr>${rows}</table></div>`;
+    return;
+  }
   const { data, error } = await sb.from('files').select('*').order('created_at', { ascending:false }).limit(500);
   if(fail(error)) return; S.files = data || [];
   const list = S.files.filter(f => !S.fileTeam || (S.fileTeam === 'org' ? !f.team_id : f.team_id === S.fileTeam));
   const sz = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round((b || 0) / 1024)) + ' KB';
-  el.innerHTML = `<div class="row" style="margin-bottom:12px"><select style="width:auto" data-chg="fileTeam">${opts([{id:'org',name:'Company-wide'}].concat(S.teams.map(t => ({id:t.id,name:t.name}))), S.fileTeam, 'All files I can access')}</select></div>
+  el.innerHTML = `<div class="row" style="margin-bottom:12px">${scopeSel}</div>
     <div class="card tw"><table><tr><th>Name</th><th>Shared with</th><th>Uploaded by</th><th>Size</th><th></th></tr>
     ${list.map(f => `<tr><td><a href="#" data-act="download" data-id="${f.id}">${esc(f.name)}</a></td><td>${f.team_id ? esc(team(f.team_id)?.name || 'Team') : 'Everyone'}</td><td>${esc(nm(f.uploaded_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${sz(f.size)}</td>
       <td>${f.uploaded_by === S.uid || isAdmin() ? `<button class="btn sm danger" data-act="delFile" data-id="${f.id}">Delete</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No files yet</td></tr>'}</table></div>`;
@@ -851,6 +955,7 @@ VIEWS.admin = async el => {
         <td class="row"><button class="btn sm" data-act="teamEdit" data-id="${t.id}">Edit</button><button class="btn sm" data-act="teamMembers" data-id="${t.id}">Members</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No teams yet</td></tr>'}</table></div>`;
   } else if(S.adminTab === 'settings'){
     body = `<form class="card" id="setf" style="max-width:480px"><label>Company name</label><input name="org_name" value="${esc(S.org.org_name || '')}" required>
+      <label>Company-wide Google Drive folder link (optional)</label><input name="drive" value="${S.org.drive_folder_id ? 'https://drive.google.com/drive/folders/' + esc(S.org.drive_folder_id) : ''}" placeholder="Paste a Drive folder link">
       <label>Work email domain</label><input name="allowed_domain" value="${esc(S.org.allowed_domain || '')}" placeholder="e.g. yourcompany.com">
       <p class="sm mut">People who sign up with this domain get in straight away. Everyone else waits for an admin to approve them. Leave blank to approve every sign-up by hand.</p>
       <button class="btn pri">Save</button></form>`;
@@ -861,7 +966,7 @@ VIEWS.admin = async el => {
   }
   el.innerHTML = `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k,l]) => `<span class="tab ${S.adminTab === k ? 'on' : ''}" data-act="adminTab" data-t="${k}">${l}</span>`).join('')}</div>${body}`;
   const sf = $('#setf'); if(sf) sf.addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(sf);
-    const { error } = await sb.from('org_settings').update({ org_name: f.get('org_name').trim(), allowed_domain: f.get('allowed_domain').trim().replace(/^@/, '').toLowerCase() || null }).eq('id', true);
+    const { error } = await sb.from('org_settings').update({ org_name: f.get('org_name').trim(), allowed_domain: f.get('allowed_domain').trim().replace(/^@/, '').toLowerCase() || null, drive_folder_id: driveId(f.get('drive')) }).eq('id', true);
     if(!fail(error)){ toast('Settings saved'); await loadBase(); } });
 };
 async function sendInvite(body){
@@ -893,6 +998,7 @@ const A = {
       <div class="grid" style="gap:8px"><button type="button" class="btn" data-act="editMe">Edit my profile</button>
       <button type="button" class="btn" data-act="theme">Appearance (light, dark, eye care)</button>
       ${st === 'off' ? '<button type="button" class="btn" data-act="enablePush">Turn on alerts on this device</button>' : st === 'on' ? '<button type="button" class="btn" data-act="disablePush">Turn off alerts on this device</button>' : ''}
+      ${gOn() ? '<button type="button" class="btn" data-act="gDisconnect">Disconnect Google Calendar and Drive</button>' : '<button type="button" class="btn" data-act="gConnect">Connect Google Calendar and Drive</button>'}
       <button type="button" class="btn" data-act="refresh">Refresh app (get the latest version)</button>
       <button type="button" class="btn pri" data-act="signOut">Sign out</button></div>`, null, { noFocus:true }); },
   forgot: async (el, e) => { e.preventDefault(); const email = ($('#authf [name=email]')?.value || '').trim(); const out = $('#aerr');
@@ -909,6 +1015,20 @@ const A = {
       async f => { await sendInvite({ email: f.get('email').trim(), full_name: f.get('full_name').trim(), title: f.get('title').trim(), role: f.get('role'), team_ids: f.getAll('team') }); return false; }, { ok:'Send invite' }); },
   reinvite: async el => { const p = P(el.dataset.id); toast('Sending…'); try { await sendInvite({ email: p.email, full_name: p.full_name, title: p.title || '', role: p.role, team_ids: [] }); } catch(x){ toast(x.message || String(x)); } },
   copyLink: async el => { try { await navigator.clipboard.writeText($('#invlink').value); toast('Link copied'); } catch(x){ $('#invlink').select(); toast('Press Ctrl+C / long-press to copy'); } },
+  gConnect: () => gConnect(),
+  gDisconnect: async () => { try { await gfn({ action:'disconnect' }); } catch(x){ toast(x.message); return; } S.me.google_connected = false; G.token = null; closeModal(); toast('Google disconnected'); render(); },
+  openGEvent: el => { const e = (S.gevents || []).find(x => x.id === el.dataset.id); if(!e) return;
+    modal(e.title, `<p><b>${e.allDay ? fmtDay(e.starts_at) + ' · All day' : fmtDT(e.starts_at) + ' – ' + (sameDay(e.starts_at, e.ends_at) ? fmtTime(e.ends_at) : fmtDT(e.ends_at))}</b><br><span class="mut">From your Google Calendar${e.organizer ? ' · organised by ' + esc(e.organizer) : ''}</span></p>
+      ${e.meet ? `<p><a class="btn pri" href="${esc(e.meet)}" target="_blank" rel="noopener" style="text-decoration:none">Join with Google Meet</a></p>` : ''}${e.location ? `<p>${esc(e.location)}</p>` : ''}
+      ${e.guests.length ? `<label>Guests</label><div class="sm">${e.guests.map(esc).join(', ')}</div>` : ''}`, null,
+      { noFocus:true, extra: e.html ? `<a class="btn" href="${esc(e.html)}" target="_blank" rel="noopener" style="text-decoration:none">Open in Google Calendar</a>` : '' }); },
+  driveClose: () => $('#dov')?.remove(),
+  drivePicked: el => { const f = { name: el.dataset.name, url: el.dataset.url }; $('#dov')?.remove(); if(S.driveCb && f.url) S.driveCb(f); },
+  driveOpen: (el, e) => { e.preventDefault(); (S.drivePath = S.drivePath || []).push({ id: el.dataset.id, name: el.dataset.name }); render(); },
+  driveUp: () => { (S.drivePath || []).pop(); render(); },
+  attachChat: () => drivePick(f => { const b = $('#mbox'); if(!b) return; b.value = (b.value ? b.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; b.dispatchEvent(new Event('input')); b.focus(); }),
+  attachTask: (el, e) => { e.preventDefault(); drivePick(f => { const t = $('#ov textarea[name=description]'); if(t) t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; }); },
+  attachNote: () => drivePick(f => { const t = $('#nbody'); if(!t) return; t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url + '\n'; t.dispatchEvent(new Event('input')); }),
   menu: () => $('#shell')?.classList.toggle('menu'), refresh: () => refreshApp(),
   theme: () => themeModal(), setTheme: el => { setTheme(el.dataset.t); themeModal(); },
   signOut: async (el, e) => { e.preventDefault(); closeModal(); await dropPush(); await sb.auth.signOut(); },
@@ -979,7 +1099,9 @@ const A = {
   newEvent: () => eventModal('meeting'), newBlock: () => eventModal('block'), openEvent: el => openEvent(el.dataset.id),
   week: el => { const k = +el.dataset.d; if(!k) S.weekStart = monday(new Date()); else { S.weekStart = new Date(S.weekStart); S.weekStart.setDate(S.weekStart.getDate() + 7 * k); } render(); },
   rsvp: async el => { const { error } = await sb.from('event_attendees').update({ response: el.dataset.r }).eq('event_id', el.dataset.id).eq('user_id', S.uid); if(fail(error)) return; closeModal(); toast('Reply saved'); render(); },
-  delEvent: async el => { const { error } = await sb.from('events').delete().eq('id', el.dataset.id); if(fail(error)) return; closeModal(); toast('Deleted'); render(); },
+  delEvent: async el => { const ev0 = S.events.find(x => x.id === el.dataset.id);
+    if(ev0 && ev0.google_event_id && ev0.created_by === S.uid && gOn()){ try { await gapi('/calendar/v3/calendars/primary/events/' + encodeURIComponent(ev0.google_event_id) + '?sendUpdates=all', { method:'DELETE' }); } catch(x){ if(x.status !== 404 && x.status !== 410) console.warn(x); } }
+    const { error } = await sb.from('events').delete().eq('id', el.dataset.id); if(fail(error)) return; closeModal(); toast('Deleted'); render(); },
   eventNotes: async el => { const e = S.events.find(x => x.id === el.dataset.id); const { data } = await sb.from('notes').select('id').eq('event_id', e.id).limit(1);
     if(data && data[0]){ S.note = data[0].id; closeModal(); go('notes'); return; }
     newNote({ event_id: e.id, title: 'Notes: ' + e.title, body: `Meeting: ${e.title}\nWhen: ${fmtDT(e.starts_at)}\nAttendees: ${[e.created_by, ...e.event_attendees.map(a => a.user_id)].map(nm).join(', ')}\n\nDiscussion\n- \n\nDecisions\n- \n\nAction items\n- `,
@@ -988,7 +1110,17 @@ const A = {
   newNote: () => newNote(), openNote: el => openNote(el.dataset.id), noteBack: () => { S.note = null; $('#notes').classList.remove('open'); paintNoteList(); },
   delNote: el => modal('Delete this note?', '<p class="mut">This cannot be undone.</p>', async () => { const { error } = await sb.from('notes').delete().eq('id', el.dataset.id); if(error) throw error; S.note = null; render(); }, { ok:'Delete' }),
   // files
-  upload: () => { const tl = isAdmin() ? S.teams : myTeams();
+  upload: () => { const fsc = fileScope();
+    if(S.view === 'files' && fsc.root){
+      if(!gOn()){ toast('Connect Google first'); return; }
+      const cur = (S.drivePath || []).length ? S.drivePath[S.drivePath.length - 1].id : fsc.root;
+      modal('Upload to Google Drive', `<label>File (up to 50 MB)</label><input type="file" name="file" required><p class="sm mut">Goes into the ${esc(fsc.label)} folder in Google Drive. Who can open it is controlled by that folder's sharing in Drive.</p>`, async f => {
+        const file = f.get('file'); if(!file || !file.size) throw new Error('Choose a file'); if(file.size > 52428800) throw new Error('File is larger than 50 MB');
+        const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: file.name, parents:[cur] })], { type:'application/json' })); fd.append('file', file);
+        await gapi('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id', { method:'POST', body: fd });
+        toast('Uploaded to Google Drive'); render(); }, { ok:'Upload' });
+      return; }
+    const tl = isAdmin() ? S.teams : myTeams();
     modal('Upload a file', `<label>File (up to 50 MB)</label><input type="file" name="file" required><label>Who can see it</label><select name="team">${teamOpts('', 'Everyone in the company', tl)}</select>`, async f => {
       const file = f.get('file'); if(!file || !file.size) throw new Error('Choose a file'); if(file.size > 52428800) throw new Error('File is larger than 50 MB');
       const tid = f.get('team') || null; const path = `${tid || 'org'}/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_')}`;
@@ -1007,8 +1139,11 @@ const A = {
   teamEdit: el => { const t = el.dataset.id ? team(el.dataset.id) : null;
     modal(t ? 'Edit team' : 'New team', `<label>Name</label><input name="name" required value="${esc(t?.name || '')}" placeholder="e.g. Marketing, Store – Khan Market">
       <label>Type</label><select name="kind">${opts(['department','store','project'].map(x => ({id:x,name:x})), t?.kind || 'department')}</select>
-      <label>Head POC</label><select name="head_id">${peopleOpts(t?.head_id, 'Not set')}</select>`, async f => {
-      const row = { name: f.get('name').trim(), kind: f.get('kind'), head_id: f.get('head_id') || null };
+      <label>Head POC</label><select name="head_id">${peopleOpts(t?.head_id, 'Not set')}</select>
+      <label>Google Drive folder link (optional)</label><input name="drive" value="${t?.drive_folder_id ? 'https://drive.google.com/drive/folders/' + esc(t.drive_folder_id) : ''}" placeholder="Paste the team's Drive folder link">
+      <p class="sm mut">When set, this team's Files tab shows that folder and uploads go into it. Share the folder with the team in Google Drive.</p>`, async f => {
+      const dv = f.get('drive').trim(); if(dv && !driveId(dv)) throw new Error('That does not look like a Google Drive folder link');
+      const row = { name: f.get('name').trim(), kind: f.get('kind'), head_id: f.get('head_id') || null, drive_folder_id: driveId(dv) };
       const { error } = t ? await sb.from('teams').update(row).eq('id', t.id) : await sb.from('teams').insert(row); if(error) throw error; toast('Team saved'); render(); },
       { extra: t ? `<button type="button" class="btn danger" data-act="teamDel" data-id="${t.id}">Delete team</button>` : '' }); },
   teamDel: async el => { const { error } = await sb.from('teams').delete().eq('id', el.dataset.id); if(fail(error)) return; closeModal(); toast('Team deleted'); render(); },
@@ -1017,7 +1152,7 @@ const A = {
 const C = {
   taskTeam: el => { S.taskTeam = el.value; paintTasks(); },
   calWho: el => { S.calWho = el.value; render(); },
-  fileTeam: el => { S.fileTeam = el.value; render(); },
+  fileTeam: el => { S.fileTeam = el.value; S.drivePath = []; render(); },
   setRole: async el => { const { error } = await sb.from('profiles').update({ role: el.value }).eq('id', el.dataset.id); if(!fail(error)) toast('Role updated'); render(); },
 };
 document.addEventListener('click', e => {
@@ -1028,7 +1163,7 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => { const el = e.target.closest('[data-chg]'); if(el && C[el.dataset.chg]) C[el.dataset.chg](el); });
 window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if(S.me && S.me.active && VIEWS[v] && v !== S.view) go(v); });
 document.addEventListener('visibilitychange', () => { if(!document.hidden && S.me && S.me.active){ loadChannels(); loadNotifs(); checkUpdate(); } });
-sb.auth.onAuthStateChange((ev, session) => { setTimeout(() => boot(session), 0); });
+sb.auth.onAuthStateChange((ev, session) => { if(session && session.provider_refresh_token) pendingG = session.provider_refresh_token; setTimeout(() => boot(session), 0); });
 </script>
 </body>
 </html>
