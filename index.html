@@ -252,8 +252,8 @@ const opts = (list, sel, blank) => (blank != null ? `<option value="">${esc(blan
   list.map(o => `<option value="${esc(o.id)}" ${o.id === sel ? 'selected' : ''}>${esc(o.name)}</option>`).join('');
 const teamOpts = (sel, blank, list) => opts((list || S.teams).map(t => ({id:t.id, name:t.name})), sel, blank);
 const peopleOpts = (sel, blank) => opts(people().map(p => ({id:p.id, name:p.full_name})), sel, blank);
-const pickList = (name, sel=[]) => `<div class="pick">${people().filter(p => p.id !== S.uid).map(p =>
-  `<label><input type="checkbox" name="${name}" value="${p.id}" ${sel.includes(p.id) ? 'checked' : ''}> ${esc(p.full_name)} <span class="mut sm">${esc(p.title || '')}</span></label>`).join('') || '<div class="mut sm">No other people yet</div>'}</div>`;
+const pickList = (name, sel=[]) => `<input class="pickq" placeholder="Search people…" autocomplete="off" style="margin-bottom:6px"><div class="pick pickbox">${people().filter(p => p.id !== S.uid).map(p =>
+  `<label data-q="${esc(((p.full_name || '') + ' ' + (p.title || '')).toLowerCase())}"><input type="checkbox" name="${name}" value="${p.id}" ${sel.includes(p.id) ? 'checked' : ''}> ${esc(p.full_name)} <span class="mut sm">${esc(p.title || '')}</span></label>`).join('') || '<div class="mut sm">No other people yet</div>'}</div>`;
 const prioPill = p => `<span class="pill ${p==='urgent'?'bad':p==='high'?'warn':'gray'}">${esc(p)}</span>`;
 const statusLabel = {todo:'To do', in_progress:'In progress', blocked:'Blocked', done:'Done'};
 const statPill = s => `<span class="pill ${s==='done'?'ok':s==='blocked'?'bad':s==='in_progress'?'warn':'gray'}">${statusLabel[s]}</span>`;
@@ -384,7 +384,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.12-15';
+const APP_VERSION = '2026.11.12-16';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -637,13 +637,29 @@ function paintChanList(){
   const by = f => S.channels.filter(f).sort((a,b) => (a.name || '').localeCompare(b.name || ''));
   const dms = S.channels.filter(c => c.kind === 'dm').sort((a,b) => (b.last_at || '').localeCompare(a.last_at || ''));
   const teamCh = by(c => c.kind !== 'dm' && c.team_id);
-  el.innerHTML = `<input placeholder="Search all messages…" id="msearch">
-    <h4>Announcements</h4>${by(c => c.kind === 'announcement' && !c.team_id).map(row).join('')}
+  const q = (S.chatQ || '').trim().toLowerCase();
+  let body;
+  if(q){
+    const ppl = people().filter(p => p.id !== S.uid && ((p.full_name || '').toLowerCase().includes(q) || (p.title || '').toLowerCase().includes(q) || (p.email || '').toLowerCase().includes(q)));
+    const chans = S.channels.filter(c => c.kind !== 'dm' && (((c.name || '') + ' ' + (team(c.team_id)?.name || '')).toLowerCase().includes(q)));
+    body = `<h4>People</h4>${ppl.map(p => `<div class="ch" data-act="dm" data-id="${p.id}">${avatar(p.id)}<span class="grow" style="min-width:0"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.full_name)}</span><span class="sm mut" style="font-weight:400">${esc(p.title || p.email)}</span></span></div>`).join('') || '<div class="mut sm" style="padding:4px 9px">No one matches</div>'}
+      <h4>Channels and groups</h4>${chans.map(c => row(c.team_id ? { ...c, name: (team(c.team_id)?.name || '') + ' · ' + c.name } : c)).join('') || '<div class="mut sm" style="padding:4px 9px">Nothing matches</div>'}
+      <h4>Messages</h4><div class="ch" data-act="searchMsgsQ">🔎 <span class="grow">Search messages for “${esc(S.chatQ.trim())}”</span></div>`;
+  } else {
+    body = `<h4>Announcements</h4>${by(c => c.kind === 'announcement' && !c.team_id).map(row).join('')}
     <h4>Channels <button class="btn sm ghost" data-act="newChannel">+</button></h4>${by(c => c.kind === 'channel' && !c.team_id && !c.is_private).map(row).join('')}
     <h4>Groups <button class="btn sm ghost" data-act="newGroup">+</button></h4>${by(c => c.kind === 'channel' && !c.team_id && c.is_private).map(row).join('') || '<div class="mut sm" style="padding:4px 9px">Pick people and start a group with +</div>'}
     ${teamCh.length ? '<h4>Team spaces</h4>' + teamCh.map(c => row({ ...c, name: (team(c.team_id)?.name || '') + ' · ' + c.name })).join('') : ''}
     <h4>Direct messages <button class="btn sm ghost" data-act="newDM">+</button></h4>${dms.map(row).join('') || '<div class="mut sm" style="padding:4px 9px">Start one with +</div>'}`;
-  $('#msearch').addEventListener('keydown', e => { if(e.key === 'Enter' && e.target.value.trim()) searchMsgs(e.target.value.trim()); });
+  }
+  let inp = $('#msearch');
+  if(!inp){
+    el.innerHTML = `<input type="search" placeholder="Search people, groups, messages…" id="msearch" autocomplete="off"><div id="cres"></div>`;
+    inp = $('#msearch'); inp.value = S.chatQ || '';
+    inp.addEventListener('input', () => { S.chatQ = inp.value; paintChanList(); });
+    inp.addEventListener('keydown', e => { if(e.key === 'Enter' && inp.value.trim()){ const first = $('#cres [data-act=dm], #cres [data-act=openChan]'); if(first) first.click(); else searchMsgs(inp.value.trim()); } else if(e.key === 'Escape'){ inp.value = ''; S.chatQ = ''; paintChanList(); } });
+  }
+  $('#cres').innerHTML = body;
 }
 VIEWS.chat = async el => {
   head('Chat');
@@ -1183,7 +1199,7 @@ const A = {
   openNotif: async el => { const n = S.notifs.find(x => x.id === el.dataset.id); if(!n) return; S.panel = false; paintPanel();
     if(!n.read_at){ n.read_at = new Date().toISOString(); paintBell(); sb.from('notifications').update({ read_at: n.read_at }).eq('id', n.id).then(() => {}); } openLink(n.link); },
   // chat
-  openChan: el => openChan(el.dataset.id),
+  openChan: el => { if(S.chatQ){ S.chatQ = ''; const mi = $('#msearch'); if(mi) mi.value = ''; } openChan(el.dataset.id); },
   openChanModal: el => { closeModal(); openChan(el.dataset.id); },
   chatBack: () => { S.chan = null; $('#chat').classList.remove('open'); loadChannels(); },
   pickMention: el => { const b = $('#mbox'); const pos = b.selectionStart; const len = +el.dataset.len;
@@ -1198,8 +1214,9 @@ const A = {
       <p class="sm mut">Channels are open to the whole company or a whole team. To talk with specific people only, create a group instead.</p>`,
       async f => { const { data, error } = await sb.rpc('create_channel', { p_name: f.get('name').trim().toLowerCase().replace(/\s+/g, '-'), p_kind: f.get('kind'), p_team: f.get('team') || null, p_private: false, p_members: [] });
         if(error) throw error; S.chan = data; await loadChannels(); openChan(data); }, { ok:'Create' }); },
-  newDM: () => modal('New message', people().filter(p => p.id !== S.uid).map(p => `<div class="item" data-act="dm" data-id="${p.id}">${avatar(p.id)}<div class="grow"><b>${esc(p.full_name)}</b><div class="sm mut">${esc(p.title || p.email)}</div></div></div>`).join('') || '<div class="empty">No one else has joined yet</div>'),
-  dm: async el => { const { data, error } = await sb.rpc('open_dm', { other: el.dataset.id }); if(fail(error)) return; closeModal(); S.chan = data;
+  newDM: () => { modal('New message', `<input class="pickq" placeholder="Search by name, title or email…" style="margin-top:10px" autocomplete="off"><div class="pickbox" style="max-height:55vh;overflow:auto;margin-top:6px">${people().filter(p => p.id !== S.uid).map(p => `<div class="item" data-act="dm" data-id="${p.id}" data-q="${esc(((p.full_name || '') + ' ' + (p.title || '') + ' ' + (p.email || '')).toLowerCase())}">${avatar(p.id)}<div class="grow"><b>${esc(p.full_name)}</b><div class="sm mut">${esc(p.title || p.email)}</div></div></div>`).join('') || '<div class="empty">No one else has joined yet</div>'}</div>`); },
+  searchMsgsQ: () => { const t = (S.chatQ || '').trim(); if(t) searchMsgs(t); },
+  dm: async el => { const { data, error } = await sb.rpc('open_dm', { other: el.dataset.id }); if(fail(error)) return; closeModal(); S.chan = data; if(S.chatQ){ S.chatQ = ''; const mi = $('#msearch'); if(mi) mi.value = ''; }
     if(S.view !== 'chat') go('chat'); else { await loadChannels(); openChan(data); } },
   newGroup: () => modal('New group', `<label>Group name</label><input name="name" required maxlength="60" placeholder="e.g. Diwali launch team">
       <label>Who should be in it</label>${pickList('mem')}<p class="sm mut">Only the people you pick can see this group and its history. You can add or remove people later.</p>`,
@@ -1327,6 +1344,9 @@ document.addEventListener('click', e => {
   if(S.panel && !e.target.closest('#npanel') && !(el && el.dataset.act === 'togglePanel')){ S.panel = false; paintPanel(); }
   if(!el) return; const f = A[el.dataset.act]; if(f) f(el, e);
 });
+document.addEventListener('keydown', e => { if(e.key === 'Enter' && e.target.classList && e.target.classList.contains('pickq')) e.preventDefault(); });
+document.addEventListener('input', e => { if(!e.target.classList || !e.target.classList.contains('pickq')) return; const q = e.target.value.trim().toLowerCase(); const box = e.target.nextElementSibling;
+  if(box) box.querySelectorAll('[data-q]').forEach(x => { x.style.display = !q || x.dataset.q.includes(q) ? '' : 'none'; }); });
 document.addEventListener('change', e => { const el = e.target.closest('[data-chg]'); if(el && C[el.dataset.chg]) C[el.dataset.chg](el); });
 window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if(S.me && S.me.active && VIEWS[v] && v !== S.view) go(v); });
 document.addEventListener('visibilitychange', () => { if(!document.hidden && S.me && S.me.active){ loadChannels(); loadNotifs(); checkUpdate(); } });
