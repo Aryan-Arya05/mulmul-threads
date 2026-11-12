@@ -201,6 +201,8 @@ const SB_URL = 'https://zcnthnhdwdtxalijrcik.supabase.co';
 const SB_KEY = 'sb_publishable_FWivcWTl1QYFEXl5A6akMA_V2hbQcSD';
 const GOOGLE_SIGNIN = true;
 const VAPID_PUBLIC = 'BB6wM1DzOpN2ZUcNcVMCk7nwYKvu9D1Caz0_rYoF-rsPKfhWFQwvSMgC1e9GUD0xZiziRyAd7eyDrVlAQIcsDlk';
+const AUTH_FLOW = (/type=(invite|recovery)/.exec(location.hash) || [])[1] || null; // arrived from an invite or reset link
+const SITE_URL = location.origin + location.pathname;
 const sb = supabase.createClient(SB_URL, SB_KEY);
 
 // ---------- state + helpers ----------
@@ -290,6 +292,7 @@ function renderAuth(msg=''){
     ${authMode === 'up' ? '<label>Full name</label><input name="name" required>' : ''}
     <label>Work email</label><input name="email" type="email" required autocomplete="email">
     <label>Password</label><input name="password" type="password" required minlength="8" autocomplete="${authMode === 'in' ? 'current-password' : 'new-password'}">
+    ${authMode === 'in' ? '<div style="text-align:right;margin-top:6px"><a href="#" class="sm" data-act="forgot">Forgot password?</a></div>' : ''}
     <div class="err" id="aerr">${esc(msg)}</div>
     <button class="btn pri" style="width:100%">${authMode === 'in' ? 'Sign in' : 'Create account'}</button>
     ${GOOGLE_SIGNIN ? '<button type="button" class="btn" style="width:100%;margin-top:8px" data-act="google">Continue with Google</button>' : ''}
@@ -306,6 +309,24 @@ function renderAuth(msg=''){
       if(error) $('#aerr').textContent = error.message;
       else if(!data.session){ authMode = 'in'; renderAuth('Account created. Check your email to confirm, then sign in.'); }
     }
+  });
+}
+function renderSetPassword(session){
+  const invite = AUTH_FLOW === 'invite';
+  $('#app').innerHTML = `<div class="auth"><form class="card" id="pwf"><img class="logo" src="logo-white.png" alt="Mulmul Threads">
+    <h2 style="margin:6px 0">${invite ? 'Welcome to Threads' : 'Set a new password'}</h2>
+    <p class="mut" style="margin:0 0 6px">${invite ? 'You have been invited as ' + esc(S.me.email) + '. Set your name and a password to finish.' : 'Choose a new password for ' + esc(S.me.email) + '.'}</p>
+    ${invite ? `<label>Full name</label><input name="name" required value="${esc(S.me.full_name || '')}">` : ''}
+    <label>Password (at least 8 characters)</label><input name="p1" type="password" required minlength="8" autocomplete="new-password">
+    <label>Confirm password</label><input name="p2" type="password" required minlength="8" autocomplete="new-password">
+    <div class="err" id="perr"></div><button class="btn pri" style="width:100%">${invite ? 'Finish and open Threads' : 'Save password'}</button></form></div>`;
+  $('#pwf').addEventListener('submit', async e => {
+    e.preventDefault(); const f = new FormData(e.target); const err = $('#perr'); err.textContent = '';
+    if(f.get('p1') !== f.get('p2')){ err.textContent = 'The two passwords do not match'; return; }
+    const { error } = await sb.auth.updateUser({ password: f.get('p1') });
+    if(error){ err.textContent = error.message; return; }
+    if(invite && f.get('name').trim()) await sb.from('profiles').update({ full_name: f.get('name').trim() }).eq('id', S.uid);
+    S.flowDone = true; S.me = null; boot(session);
   });
 }
 function renderPending(){
@@ -326,6 +347,8 @@ async function boot(session){
     if(error || !me){ $('#app').innerHTML = `<div class="auth"><div class="card">Could not load your profile. <a href="#" data-act="signOut">Sign out</a></div></div>`; return; }
     S.me = me;
     if(!me.active){ renderPending(); return; }
+    if(AUTH_FLOW && !S.flowDone){ renderSetPassword(session); return; }
+    if(!me.joined_at) sb.rpc('mark_joined').then(() => {});
     await loadBase(); renderShell(); subscribe();
     await Promise.all([loadChannels(), loadNotifs(), syncPush(false)]); checkUpdate();
     route();
@@ -340,7 +363,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.12-7';
+const APP_VERSION = '2026.11.12-8';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -816,12 +839,12 @@ VIEWS.admin = async el => {
   if(S.adminTab === 'users'){
     const all = Object.values(S.profiles).sort((a,b) => (a.active - b.active) || a.full_name.localeCompare(b.full_name));
     const roles = S.me.role === 'founder' ? ['founder','admin','head','member'] : ['admin','head','member'];
-    body = `<div class="card tw"><table><tr><th>Person</th><th>Role</th><th>Job title</th><th>Access</th></tr>${all.map(p => {
+    body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="invite">+ Add person</button></div><div class="card tw"><table><tr><th>Person</th><th>Role</th><th>Job title</th><th>Access</th></tr>${all.map(p => {
       const locked = p.id === S.uid || (p.role === 'founder' && S.me.role !== 'founder');
       return `<tr><td><b>${esc(p.full_name)}</b><div class="sm mut">${esc(p.email)}</div></td>
         <td>${locked ? `<span class="pill">${esc(p.role)}</span>` : `<select style="width:auto" data-chg="setRole" data-id="${p.id}">${opts(roles.map(r => ({id:r,name:r})), p.role)}</select>`}</td>
         <td>${esc(p.title || '')}</td>
-        <td>${locked ? '<span class="pill ok">Active</span>' : p.active ? `<span class="pill ok">Active</span> <button class="btn sm danger" data-act="setActive" data-id="${p.id}" data-v="0">Remove access</button>` : `<span class="pill warn">Pending</span> <button class="btn sm pri" data-act="setActive" data-id="${p.id}" data-v="1">Approve</button>`}</td></tr>`; }).join('')}</table></div>`;
+        <td>${locked ? '<span class="pill ok">Active</span>' : p.active ? `${p.invited_at && !p.joined_at ? `<span class="pill warn">Invited</span> <button class="btn sm" data-act="reinvite" data-id="${p.id}">Send again</button>` : '<span class="pill ok">Active</span>'} <button class="btn sm danger" data-act="setActive" data-id="${p.id}" data-v="0">Remove access</button>` : `<span class="pill warn">Pending</span> <button class="btn sm pri" data-act="setActive" data-id="${p.id}" data-v="1">Approve</button>`}</td></tr>`; }).join('')}</table></div>`;
   } else if(S.adminTab === 'teams'){
     body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="teamEdit">+ New team</button></div><div class="card tw"><table><tr><th>Team</th><th>Type</th><th>Head POC</th><th>Members</th><th></th></tr>
       ${S.teams.map(t => `<tr><td><b>${esc(t.name)}</b></td><td>${esc(t.kind)}</td><td>${t.head_id ? esc(nm(t.head_id)) : '<span class="mut">not set</span>'}</td><td>${S.tm.filter(m => m.team_id === t.id).length}</td>
@@ -834,13 +857,24 @@ VIEWS.admin = async el => {
   } else {
     const { data } = await sb.from('audit_log').select('*').order('created_at', { ascending:false }).limit(200);
     body = `<div class="card tw"><table><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr>${(data || []).map(a => `<tr><td class="sm">${fmtDT(a.created_at)}</td><td>${a.actor_id ? esc(nm(a.actor_id)) : 'System'}</td><td>${esc(a.action.toLowerCase())} ${esc(a.entity.replace('_', ' '))}</td>
-      <td class="sm mut">${esc(a.detail?.name || a.detail?.full_name || a.detail?.title || (a.detail?.user_id ? nm(a.detail.user_id) : '') || '')}${a.entity === 'profiles' ? ` · ${esc(a.detail?.role)} · ${a.detail?.active ? 'active' : 'no access'}` : ''}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Nothing logged yet</td></tr>'}</table></div>`;
+      <td class="sm mut">${esc(a.detail?.name || a.detail?.full_name || a.detail?.title || (a.detail?.user_id ? nm(a.detail.user_id) : '') || '')}${a.action === 'INVITE' ? ' · ' + esc(a.detail?.email || '') : a.entity === 'profiles' ? ` · ${esc(a.detail?.role)} · ${a.detail?.active ? 'active' : 'no access'}` : ''}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Nothing logged yet</td></tr>'}</table></div>`;
   }
   el.innerHTML = `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k,l]) => `<span class="tab ${S.adminTab === k ? 'on' : ''}" data-act="adminTab" data-t="${k}">${l}</span>`).join('')}</div>${body}`;
   const sf = $('#setf'); if(sf) sf.addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(sf);
     const { error } = await sb.from('org_settings').update({ org_name: f.get('org_name').trim(), allowed_domain: f.get('allowed_domain').trim().replace(/^@/, '').toLowerCase() || null }).eq('id', true);
     if(!fail(error)){ toast('Settings saved'); await loadBase(); } });
 };
+async function sendInvite(body){
+  const { data, error } = await sb.functions.invoke('invite', { body });
+  if(error){ let m = error.message; try { const j = await error.context.json(); if(j && j.error) m = j.error; } catch(x){} throw new Error(m); }
+  if(data && data.error) throw new Error(data.error);
+  await loadBase();
+  if(data.emailed){ closeModal(); toast('Invite emailed to ' + body.email); if(S.view === 'admin') render(); return; }
+  modal('Invite ready: send this link', `<p>${esc(body.full_name || body.email)} has been added, but the invite email could not be sent automatically${data.mail_error ? ' (' + esc(data.mail_error) + ')' : ''}.</p>
+    <p>Copy this one-time link and send it to <b>${esc(body.email)}</b> yourself. Opening it lets them set their password and get in. Treat it like a password: send it only to them.</p>
+    <input id="invlink" readonly value="${esc(data.link)}" onfocus="this.select()">`, null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="copyLink">Copy link</button>' });
+  if(S.view === 'admin') render();
+}
 function teamMembersModal(id){
   const t = team(id); const cur = S.tm.filter(m => m.team_id === id).map(m => m.user_id);
   modal(t.name + ' members', `<div class="pick" style="max-height:340px">${people().map(p => `<label><input type="checkbox" name="m" value="${p.id}" ${cur.includes(p.id) ? 'checked' : ''}> ${esc(p.full_name)} <span class="mut sm">${esc(p.title || '')}</span></label>`).join('')}</div>`, async f => {
@@ -861,6 +895,20 @@ const A = {
       ${st === 'off' ? '<button type="button" class="btn" data-act="enablePush">Turn on alerts on this device</button>' : st === 'on' ? '<button type="button" class="btn" data-act="disablePush">Turn off alerts on this device</button>' : ''}
       <button type="button" class="btn" data-act="refresh">Refresh app (get the latest version)</button>
       <button type="button" class="btn pri" data-act="signOut">Sign out</button></div>`, null, { noFocus:true }); },
+  forgot: async (el, e) => { e.preventDefault(); const email = ($('#authf [name=email]')?.value || '').trim(); const out = $('#aerr');
+    if(!email){ out.textContent = 'Type your work email above first, then tap Forgot password.'; return; }
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: SITE_URL });
+    out.textContent = error ? error.message : 'If that email has an account, a reset link is on its way.'; },
+  invite: () => { const roles = S.me.role === 'founder' ? ['member','head','admin','founder'] : ['member','head','admin'];
+    modal('Add a person', `<label>Work email</label><input name="email" type="email" required placeholder="name@mulmul.co">
+      <label>Full name</label><input name="full_name" required>
+      <div class="row wrap"><div class="grow"><label>Job title</label><input name="title"></div>
+        <div class="grow"><label>Role</label><select name="role">${opts(roles.map(r => ({id:r,name:r})), 'member')}</select></div></div>
+      ${S.teams.length ? `<label>Teams</label><div class="pick">${S.teams.map(t => `<label><input type="checkbox" name="team" value="${t.id}"> ${esc(t.name)}</label>`).join('')}</div>` : ''}
+      <p class="sm mut">They get an email invite, accept it, and set their own password. People with a mulmul.co Google account can also just use Continue with Google.</p>`,
+      async f => { await sendInvite({ email: f.get('email').trim(), full_name: f.get('full_name').trim(), title: f.get('title').trim(), role: f.get('role'), team_ids: f.getAll('team') }); return false; }, { ok:'Send invite' }); },
+  reinvite: async el => { const p = P(el.dataset.id); toast('Sending…'); try { await sendInvite({ email: p.email, full_name: p.full_name, title: p.title || '', role: p.role, team_ids: [] }); } catch(x){ toast(x.message || String(x)); } },
+  copyLink: async el => { try { await navigator.clipboard.writeText($('#invlink').value); toast('Link copied'); } catch(x){ $('#invlink').select(); toast('Press Ctrl+C / long-press to copy'); } },
   menu: () => $('#shell')?.classList.toggle('menu'), refresh: () => refreshApp(),
   theme: () => themeModal(), setTheme: el => { setTheme(el.dataset.t); themeModal(); },
   signOut: async (el, e) => { e.preventDefault(); closeModal(); await dropPush(); await sb.auth.signOut(); },
