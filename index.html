@@ -377,7 +377,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.12-11';
+const APP_VERSION = '2026.11.12-12';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -600,7 +600,7 @@ VIEWS.home = async el => {
   const mine = (ev.data || []).filter(e => e.created_by === S.uid || e.event_attendees.some(a => a.user_id === S.uid));
   const unread = S.channels.filter(c => c.unread > 0);
   const hr = now.getHours();
-  el.innerHTML = `<h1 style="margin-bottom:16px">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}, ${esc(S.me.full_name.split(' ')[0])}</h1>
+  el.innerHTML = `<h1 style="margin-bottom:16px">Namaste ${esc(S.me.full_name.split(' ')[0])}</h1>
   ${alertsCard()}${googleCard()}<div class="grid g2">
     <div class="card"><div class="row"><h3 class="grow">My open tasks</h3><button class="btn sm" data-act="newTask">+ Task</button></div>
       ${(tk.data || []).map(t => `<div class="item" data-act="openTask" data-id="${t.id}"><div class="grow"><div>${esc(t.title)}</div>${dueTxt(t)}</div>${prioPill(t.priority)}</div>`).join('') || '<div class="empty">Nothing pending. Nice.</div>'}</div>
