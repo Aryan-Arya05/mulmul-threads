@@ -181,6 +181,16 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
 @media (prefers-reduced-motion:reduce){#splash,#splash span{transition:none;animation:none;opacity:1}}
 .ev.google{border-left-color:#4285f4}
 #dov{z-index:55}
+.comp{flex-wrap:wrap}
+.pend{flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap}
+.pend:empty{display:none}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--soft);border-radius:99px;padding:3px 6px 3px 12px;font-size:13px;max-width:100%}
+.chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+.chip button{border:0;background:none;cursor:pointer;color:var(--mut);font-size:15px;padding:0 4px}
+.att{display:block;max-width:min(280px,100%);max-height:240px;border-radius:8px;margin-top:6px;cursor:pointer;background:var(--soft2);min-height:60px;min-width:80px}
+.attf{display:inline-flex;align-items:center;gap:8px;margin-top:6px;margin-right:6px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);text-decoration:none;max-width:100%}
+.choice{display:flex;gap:12px;align-items:center;width:100%;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--panel);cursor:pointer;text-align:left;margin-top:10px;color:var(--ink);font-weight:400}
+.choice:hover{border-color:var(--acc)}
 #upd{position:fixed;top:0;left:0;right:0;z-index:70;background:var(--hl-bg);color:var(--hl-ink);padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:center;font-weight:500;box-shadow:0 2px 12px #0003}
 #vtitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .acct{display:flex;align-items:center;gap:7px;padding:4px 10px 4px 5px}
@@ -366,7 +376,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.12-9';
+const APP_VERSION = '2026.11.12-10';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -633,7 +643,7 @@ VIEWS.chat = async el => {
   if(S.chan) openChan(S.chan);
 };
 async function openChan(id){
-  S.chan = id; if(S.view !== 'chat'){ go('chat'); return; }
+  S.chan = id; S.pending = []; if(S.view !== 'chat'){ go('chat'); return; }
   const c = S.channels.find(x => x.id === id);
   if(!c){ S.chan = null; $('#chat')?.classList.remove('open'); paintChanList(); return; }
   $('#chat').classList.add('open'); c.unread = 0; paintChanList();
@@ -642,7 +652,7 @@ async function openChan(id){
       ${c.kind === 'announcement' && canPost ? '<button class="btn sm" data-act="readers">Read by</button>' : ''}
       ${c.kind !== 'dm' && c.is_private ? '<button class="btn sm" data-act="members">Members</button>' : ''}</div>
     <div class="msgs" id="msgs"></div>
-    ${canPost ? `<form class="comp" id="comp"><div class="mlist" id="mlist" hidden></div><button type="button" class="btn" data-act="attachChat" title="Attach a file from Google Drive" aria-label="Attach from Google Drive">📎</button><textarea rows="1" id="mbox" placeholder="Message ${esc(chanName(c))} — type @ to mention"></textarea><button class="btn pri">Send</button></form>`
+    ${canPost ? `<form class="comp" id="comp"><div class="mlist" id="mlist" hidden></div><div class="pend" id="pend"></div><button type="button" class="btn" data-act="attachChat" title="Attach a photo or file" aria-label="Attach a photo or file">📎</button><textarea class="grow" style="width:auto" rows="1" id="mbox" placeholder="Message ${esc(chanName(c))} — type @ to mention"></textarea><button class="btn pri">Send</button></form>`
       : '<div class="comp mut sm">Only admins and team heads can post announcements.</div>'}`;
   const { data, error } = await sb.from('messages').select('*').eq('channel_id', id).order('created_at', { ascending:false }).limit(100);
   if(fail(error) || S.chan !== id) return;
@@ -651,16 +661,58 @@ async function openChan(id){
   const box = $('#mbox'); if(!box) return;
   if(innerWidth > 820) box.focus();
   box.addEventListener('input', () => { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 140) + 'px'; mentionMenu(box); });
+  box.addEventListener('paste', e => { const fl = [...(e.clipboardData?.files || [])]; if(fl.length){ e.preventDefault(); addPending(fl); } });
   box.addEventListener('keydown', e => { if(e.key === 'Enter' && !e.shiftKey && innerWidth > 820){ e.preventDefault(); $('#comp').requestSubmit(); } });
   $('#comp').addEventListener('submit', async e => {
-    e.preventDefault(); const body = box.value.trim(); if(!body) return;
+    e.preventDefault(); let body = box.value.trim(); const files = (S.pending || []).slice(); if(!body && !files.length) return;
+    if(S.sending) return; S.sending = true; const attachments = [];
+    try {
+      if(files.length) toast('Uploading ' + files.length + (files.length > 1 ? ' files…' : ' file…'));
+      for(const file of files){
+        const path = `chat/${id}/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
+        const up = await sb.storage.from('files').upload(path, file, { contentType: file.type || undefined });
+        if(up.error) throw up.error;
+        attachments.push({ name: file.name, path, size: file.size, mime: file.type || '' });
+      }
+    } catch(x){ S.sending = false; if(attachments.length) sb.storage.from('files').remove(attachments.map(a => a.path)); toast('Upload failed: ' + (x.message || x)); return; }
+    if(!body) body = '📎 ' + files.map(f => f.name).join(', ');
+    S.pending = []; paintPend();
     const low = body.toLowerCase();
     const mentions = people().filter(p => p.id !== S.uid && p.full_name && low.includes('@' + p.full_name.toLowerCase())).map(p => p.id);
     box.value = ''; box.style.height = 'auto'; $('#mlist').hidden = true;
-    const { data: m, error } = await sb.from('messages').insert({ channel_id: id, sender_id: S.uid, body, mentions }).select().single();
-    if(fail(error)){ box.value = body; return; }
+    const { data: m, error } = await sb.from('messages').insert({ channel_id: id, sender_id: S.uid, body, mentions, attachments }).select().single();
+    S.sending = false;
+    if(fail(error)){ box.value = body; if(attachments.length) sb.storage.from('files').remove(attachments.map(a => a.path)); return; }
     if(!S.msgs.some(x => x.id === m.id)){ S.msgs.push(m); paintMsgs(true); }
   });
+}
+const isImg = a => /^image\/(png|jpe?g|gif|webp|avif|heic|heif)$/i.test(a.mime || '') ;
+function attHtml(m){
+  const list = Array.isArray(m.attachments) ? m.attachments : []; if(!list.length) return '';
+  return '<div>' + list.map(a => isImg(a)
+    ? `<img class="att" alt="${esc(a.name)}" data-att="${esc(a.path)}" data-act="openAtt" data-path="${esc(a.path)}" data-name="${esc(a.name)}" data-img="1">`
+    : `<a href="#" class="attf" data-act="openAtt" data-path="${esc(a.path)}" data-name="${esc(a.name)}"><span>📄</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span><span class="sm mut">${fmtSize(a.size)}</span></a>`).join('') + '</div>';
+}
+async function hydrateAtts(scroll){
+  S.attUrls = S.attUrls || {};
+  const imgs = [...document.querySelectorAll('img[data-att]')]; if(!imgs.length) return;
+  const need = [...new Set(imgs.map(i => i.dataset.att).filter(p => !S.attUrls[p]))];
+  if(need.length){ const { data } = await sb.storage.from('files').createSignedUrls(need, 3600); (data || []).forEach(r => { if(r.signedUrl) S.attUrls[r.path] = r.signedUrl; }); }
+  const box = $('#msgs');
+  document.querySelectorAll('img[data-att]').forEach(i => { const u = S.attUrls[i.dataset.att]; if(u && i.src !== u){ if(scroll && box) i.addEventListener('load', () => { box.scrollTop = box.scrollHeight; }, { once:true }); i.src = u; } });
+}
+function paintPend(){
+  const el = $('#pend'); if(!el) return;
+  el.innerHTML = (S.pending || []).map((f, i) => `<span class="chip"><span>${isImg({ mime: f.type }) ? '🖼' : '📄'} ${esc(f.name)}</span><span class="mut">${fmtSize(f.size)}</span><button type="button" data-act="rmPend" data-i="${i}" aria-label="Remove">✕</button></span>`).join('');
+}
+function addPending(fileList){
+  S.pending = S.pending || [];
+  for(const f of fileList){
+    if(S.pending.length >= 5){ toast('Up to 5 files per message'); break; }
+    if(f.size > 26214400){ toast(f.name + ' is larger than 25 MB'); continue; }
+    if(!f.size) continue; S.pending.push(f);
+  }
+  paintPend(); $('#mbox')?.focus();
 }
 function mentionMenu(box){
   const ml = $('#mlist'); const m = box.value.slice(0, box.selectionStart).match(/@([\w ]{0,30})$/);
@@ -676,10 +728,11 @@ function paintMsgs(scroll){
       const sep = !last || !sameDay(last, m.created_at) ? `<div class="daysep">${fmtDay(m.created_at)}</div>` : ''; last = m.created_at;
       const own = m.sender_id === S.uid;
       return sep + `<div class="msg" data-id="${m.id}">${avatar(m.sender_id)}<div class="grow"><div><b>${esc(nm(m.sender_id))}</b> <span class="sm mut">${fmtTime(m.created_at)}${m.edited_at && !m.deleted_at ? ' · edited' : ''}</span></div>
-        ${m.deleted_at ? '<div class="del">Message deleted</div>' : `<div class="mb">${rich(m.body)}</div>
+        ${m.deleted_at ? '<div class="del">Message deleted</div>' : `<div class="mb">${rich(m.body)}</div>${attHtml(m)}
         <div class="ma"><button class="btn sm ghost" data-act="msgTask" data-id="${m.id}" title="Turn into a task">✓ Task</button>${own ? `<button class="btn sm ghost" data-act="msgEdit" data-id="${m.id}">Edit</button><button class="btn sm ghost danger" data-act="msgDel" data-id="${m.id}">Delete</button>` : ''}</div>`}</div></div>`;
     }).join('') || '<div class="empty">No messages yet. Say hello.</div>');
   if(scroll) el.scrollTop = el.scrollHeight;
+  hydrateAtts(scroll);
 }
 async function searchMsgs(q){
   const pat = '%' + q.replace(/[%_\\]/g, m => '\\' + m) + '%';
@@ -1026,7 +1079,14 @@ const A = {
   drivePicked: el => { const f = { name: el.dataset.name, url: el.dataset.url }; $('#dov')?.remove(); if(S.driveCb && f.url) S.driveCb(f); },
   driveOpen: (el, e) => { e.preventDefault(); (S.drivePath = S.drivePath || []).push({ id: el.dataset.id, name: el.dataset.name }); render(); },
   driveUp: () => { (S.drivePath || []).pop(); render(); },
-  attachChat: () => drivePick(f => { const b = $('#mbox'); if(!b) return; b.value = (b.value ? b.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; b.dispatchEvent(new Event('input')); b.focus(); }),
+  attachChat: () => { modal('Attach', `<label class="choice"><span style="font-size:22px">📱</span><span><b>Photo or file from this device</b><br><span class="sm mut">Up to 5 files, 25 MB each. Only people in this conversation can open them.</span></span><input type="file" id="devfile" multiple hidden></label>
+      <button type="button" class="choice" data-act="attachDrive"><span style="font-size:22px">📁</span><span><b>From Google Drive</b><br><span class="sm mut">Shares a link to a file in your Drive.</span></span></button>`, null, { noFocus:true });
+    $('#devfile').addEventListener('change', e => { const fl = [...e.target.files]; closeModal(); addPending(fl); }); },
+  attachDrive: () => { closeModal(); drivePick(f => { const b = $('#mbox'); if(!b) return; b.value = (b.value ? b.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; b.dispatchEvent(new Event('input')); b.focus(); }); },
+  rmPend: el => { (S.pending || []).splice(+el.dataset.i, 1); paintPend(); },
+  openAtt: async (el, e) => { e.preventDefault(); const img = el.dataset.img === '1';
+    const { data, error } = await sb.storage.from('files').createSignedUrl(el.dataset.path, 300, img ? undefined : { download: el.dataset.name }); if(fail(error)) return;
+    const a = document.createElement('a'); a.href = data.signedUrl; a.target = '_blank'; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove(); },
   attachTask: (el, e) => { e.preventDefault(); drivePick(f => { const t = $('#ov textarea[name=description]'); if(t) t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; }); },
   attachNote: () => drivePick(f => { const t = $('#nbody'); if(!t) return; t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url + '\n'; t.dispatchEvent(new Event('input')); }),
   menu: () => $('#shell')?.classList.toggle('menu'), refresh: () => refreshApp(),
@@ -1086,7 +1146,8 @@ const A = {
     taskModal(null, { title: m.body.split('\n')[0].slice(0, 120), description: `From ${nm(m.sender_id)} in ${c ? chanName(c) : 'chat'}:\n${m.body}`, team_id: c?.team_id || null, source_message_id: m.id }); },
   msgEdit: el => { const m = S.msgs.find(x => x.id === el.dataset.id); if(!m) return;
     modal('Edit message', `<textarea name="body" rows="4" required>${esc(m.body)}</textarea>`, async f => { const { error } = await sb.from('messages').update({ body: f.get('body').trim() }).eq('id', m.id); if(error) throw error; }); },
-  msgDel: el => modal('Delete this message?', '<p class="mut">Others will see “Message deleted”.</p>', async () => { const { error } = await sb.from('messages').update({ deleted_at: new Date().toISOString() }).eq('id', el.dataset.id); if(error) throw error; }, { ok:'Delete' }),
+  msgDel: el => modal('Delete this message?', '<p class="mut">Others will see “Message deleted”.</p>', async () => { const m0 = S.msgs.find(x => x.id === el.dataset.id); const { error } = await sb.from('messages').update({ deleted_at: new Date().toISOString(), attachments: [] }).eq('id', el.dataset.id); if(error) throw error;
+      if(m0 && Array.isArray(m0.attachments) && m0.attachments.length) sb.storage.from('files').remove(m0.attachments.map(a => a.path)); }, { ok:'Delete' }),
   // tasks
   newTask: () => taskModal(null), openTask: (el, e) => { if(e.target.matches('input[type=checkbox]')) return; taskModal(el.dataset.id); },
   toggleDone: async el => { const { error } = await sb.from('tasks').update({ status: el.checked ? 'done' : 'todo' }).eq('id', el.dataset.id); if(!fail(error)) loadTasks(); },
