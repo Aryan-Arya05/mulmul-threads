@@ -192,6 +192,12 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
 .attf{display:inline-flex;align-items:center;gap:8px;margin-top:6px;margin-right:6px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);text-decoration:none;max-width:100%}
 .choice{display:flex;gap:12px;align-items:center;width:100%;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--panel);cursor:pointer;text-align:left;margin-top:10px;color:var(--ink);font-weight:400}
 .choice:hover{border-color:var(--acc)}
+.aimsg{display:flex;gap:10px;padding:8px 6px}
+.aimsg.me{justify-content:flex-end}
+.aimsg .bub{max-width:min(640px,86%);padding:10px 14px;border-radius:14px;white-space:pre-wrap;word-break:break-word;background:var(--panel);border:1px solid var(--line)}
+.aimsg.me .bub{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
+.aimsg.err .bub{border-color:var(--bad);color:var(--bad)}
+.sugg{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:14px}
 #upd{position:fixed;top:0;left:0;right:0;z-index:70;background:var(--hl-bg);color:var(--hl-ink);padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:center;font-weight:500;box-shadow:0 2px 12px #0003}
 #vtitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .acct{display:flex;align-items:center;gap:7px;padding:4px 10px 4px 5px}
@@ -228,6 +234,7 @@ const P = id => S.profiles[id] || { full_name:'Unknown', email:'' };
 const nm = id => P(id).full_name || P(id).email;
 const ini = id => (nm(id).split(/\s+/).map(w => w[0]).join('').slice(0,2) || '?').toUpperCase();
 const isAdmin = () => S.me && ['founder','admin'].includes(S.me.role);
+const canAI = () => !!S.me && (isAdmin() || !!S.me.ai_access);
 const team = id => S.teams.find(t => t.id === id);
 const myTeams = () => S.teams.filter(t => t.head_id === S.uid || S.tm.some(m => m.team_id === t.id && m.user_id === S.uid));
 const people = () => Object.values(S.profiles).filter(p => p.active).sort((a,b) => a.full_name.localeCompare(b.full_name));
@@ -377,7 +384,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.12-14';
+const APP_VERSION = '2026.11.12-15';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -390,12 +397,13 @@ const ICONS = {
   admin:'<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
   menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
   refresh:'<path d="M20 11a8 8 0 1 0-2.3 6.3M20 4v7h-7"/>',
-  out:'<path d="M10 4H5v16h5M14 8l4 4-4 4M18 12H9"/>'
+  out:'<path d="M10 4H5v16h5M14 8l4 4-4 4M18 12H9"/>',
+  assistant:'<path d="M11 3l1.9 5.6L18.5 10.5l-5.6 1.9L11 18l-1.9-5.6L3.5 10.5l5.6-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>'
 };
 const ico = k => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const NAV = [['home','Home'],['chat','Chat'],['tasks','Tasks'],['calendar','Calendar'],['notes','Notes'],['files','Files'],['people','People']];
 function renderShell(){
-  const nav = NAV.concat(isAdmin() ? [['overview','Overview'],['admin','Admin']] : []);
+  const nav = NAV.concat(canAI() ? [['assistant','Assistant']] : []).concat(isAdmin() ? [['overview','Overview'],['admin','Admin']] : []);
   const badge = '<span class="badge chatBadge" hidden></span>';
   $('#app').innerHTML = `<div class="shell" id="shell"><div class="scrim" data-act="menu"></div>
     <nav class="side"><div class="brand"><img class="logo" src="logo-white.png" alt="Mulmul Threads"></div>
@@ -432,10 +440,10 @@ const VIEWS = {};
 function go(v, arg){ $('#shell')?.classList.remove('menu'); S.view = v; try { history.replaceState(null, '', '#' + v); } catch(e){} render(arg); }
 function route(){ const v = location.hash.slice(1); go(VIEWS[v] ? v : 'home'); }
 function render(arg){
-  if(!VIEWS[S.view] || ((S.view === 'admin' || S.view === 'overview') && !isAdmin())) S.view = 'home';
+  if(!VIEWS[S.view] || ((S.view === 'admin' || S.view === 'overview') && !isAdmin()) || (S.view === 'assistant' && !canAI())) S.view = 'home';
   const main4 = ['home','chat','tasks','calendar'].includes(S.view);
   document.querySelectorAll('[data-nav]').forEach(n => n.classList.toggle('on', n.dataset.nav === S.view || (n.dataset.nav === 'more' && !main4)));
-  const el = $('#view'); el.className = 'view' + (['chat','notes'].includes(S.view) ? ' flush' : '');
+  const el = $('#view'); el.className = 'view' + (['chat','notes','assistant'].includes(S.view) ? ' flush' : '');
   $('#vact').innerHTML = ''; el.innerHTML = '<div class="empty">Loading…</div>';
   VIEWS[S.view](el, arg);
 }
@@ -475,6 +483,7 @@ function openLink(link){
   if(k === 'channel'){ S.chan = id; go('chat'); }
   else if(k === 'task') go('tasks', id);
   else if(k === 'event') go('calendar');
+  else if(k === 'note'){ S.note = id; go('notes'); }
   else if(k === 'admin' && isAdmin()){ S.adminTab = 'users'; go('admin'); }
 }
 
@@ -1005,6 +1014,45 @@ VIEWS.people = el => {
         ${isAdmin() || t.head_id === S.uid ? `<button class="btn sm" data-act="teamMembers" data-id="${t.id}">Members</button>` : ''}</div>`; }).join('') || '<div class="empty">No teams yet' + (isAdmin() ? '. Create them in Admin.' : '') + '</div>'}</div></div>`;
 };
 
+// ---------- assistant ----------
+const AI_SUGG = ['What is overdue right now, and who owns it?', 'Summarise #general from the last 24 hours', 'Schedule a 30-minute review with my team tomorrow at 11 am', 'Give me an overview of this week'];
+VIEWS.assistant = el => {
+  S.ai = S.ai || [];
+  head('Assistant', S.ai.length ? '<button class="btn" data-act="aiNew">New chat</button>' : '');
+  el.innerHTML = `<div class="pane" style="max-width:880px;margin:0 auto;width:100%"><div class="msgs" id="aimsgs"></div>
+    <form class="comp" id="aicomp"><textarea class="grow" style="width:auto" rows="1" id="aibox" placeholder="Ask about tasks, meetings or a channel…"></textarea><button class="btn pri">Send</button></form></div>`;
+  paintAI();
+  const box = $('#aibox'); if(innerWidth > 820) box.focus();
+  box.addEventListener('input', () => { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 140) + 'px'; });
+  box.addEventListener('keydown', e => { if(e.key === 'Enter' && !e.shiftKey && innerWidth > 820){ e.preventDefault(); $('#aicomp').requestSubmit(); } });
+  $('#aicomp').addEventListener('submit', e => { e.preventDefault(); const t = box.value.trim(); if(!t || S.aiBusy) return; box.value = ''; box.style.height = 'auto'; sendAI(t); });
+};
+function paintAI(){
+  const el = $('#aimsgs'); if(!el) return;
+  if(!S.ai.length && !S.aiBusy){
+    el.innerHTML = `<div style="text-align:center;margin-top:8vh"><h2>How can I help, ${esc(S.me.full_name.split(' ')[0])}?</h2>
+      <p class="mut" style="max-width:520px;margin:8px auto">I can line up tasks, schedule meetings, summarise a channel or group, and give you an overview. I work with your own access and cannot read direct messages.</p>
+      <div class="sugg">${AI_SUGG.map(q => `<button class="tab" data-act="aiSuggest" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div></div>`;
+    return;
+  }
+  el.innerHTML = S.ai.map(m => m.role === 'user' ? `<div class="aimsg me"><div class="bub">${esc(m.content)}</div></div>`
+    : `<div class="aimsg ${m.role === 'error' ? 'err' : ''}"><div class="av">✦</div><div style="min-width:0"><div class="bub">${esc(m.content).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</div>
+      ${(m.actions || []).map(a => `<a href="#" class="attf" data-act="aiOpen" data-link="${esc(a.link)}">↗ ${esc(a.label)}</a>`).join('')}</div></div>`).join('') +
+    (S.aiBusy ? '<div class="aimsg"><div class="av">✦</div><div class="bub mut">Working on it…</div></div>' : '');
+  el.scrollTop = el.scrollHeight;
+}
+async function sendAI(text){
+  S.ai.push({ role:'user', content:text }); S.aiBusy = true; paintAI();
+  try {
+    const { data, error } = await sb.functions.invoke('assistant', { body: { messages: S.ai.filter(m => m.role === 'user' || m.role === 'assistant').map(m => ({ role: m.role, content: m.content })) } });
+    if(error){ let msg = error.message; try { const jj = await error.context.json(); if(jj && jj.error) msg = jj.error; } catch(x){} throw new Error(msg); }
+    if(data && data.error) throw new Error(data.error);
+    S.ai.push({ role:'assistant', content: data.reply || 'Done.', actions: data.actions || [] });
+  } catch(x){ S.ai.push({ role:'error', content: x.message || String(x) }); }
+  S.aiBusy = false;
+  if(S.view === 'assistant'){ paintAI(); head('Assistant', '<button class="btn" data-act="aiNew">New chat</button>'); }
+}
+
 // ---------- overview (founders + admins) ----------
 VIEWS.overview = async el => {
   head('Overview');
@@ -1027,11 +1075,12 @@ VIEWS.admin = async el => {
   if(S.adminTab === 'users'){
     const all = Object.values(S.profiles).sort((a,b) => (a.active - b.active) || a.full_name.localeCompare(b.full_name));
     const roles = S.me.role === 'founder' ? ['founder','admin','head','member'] : ['admin','head','member'];
-    body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="invite">+ Add person</button></div><div class="card tw"><table><tr><th>Person</th><th>Role</th><th>Job title</th><th>Access</th></tr>${all.map(p => {
+    body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="invite">+ Add person</button></div><div class="card tw"><table><tr><th>Person</th><th>Role</th><th>Job title</th><th>Assistant</th><th>Access</th></tr>${all.map(p => {
       const locked = p.id === S.uid || (p.role === 'founder' && S.me.role !== 'founder');
       return `<tr><td><b>${esc(p.full_name)}</b><div class="sm mut">${esc(p.email)}</div></td>
         <td>${locked ? `<span class="pill">${esc(p.role)}</span>` : `<select style="width:auto" data-chg="setRole" data-id="${p.id}">${opts(roles.map(r => ({id:r,name:r})), p.role)}</select>`}</td>
         <td>${esc(p.title || '')}</td>
+        <td>${['founder','admin'].includes(p.role) ? '<span class="pill gray">Included</span>' : `<label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:400;color:var(--ink)"><input type="checkbox" data-chg="setAI" data-id="${p.id}" ${p.ai_access ? 'checked' : ''}> Allow</label>`}</td>
         <td>${locked ? '<span class="pill ok">Active</span>' : p.active ? `${p.invited_at && !p.joined_at ? `<span class="pill warn">Invited</span> <button class="btn sm" data-act="reinvite" data-id="${p.id}">Send again</button>` : '<span class="pill ok">Active</span>'} <button class="btn sm danger" data-act="setActive" data-id="${p.id}" data-v="0">Remove access</button>` : `<span class="pill warn">Pending</span> <button class="btn sm pri" data-act="setActive" data-id="${p.id}" data-v="1">Approve</button>`}</td></tr>`; }).join('')}</table></div>`;
   } else if(S.adminTab === 'teams'){
     body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="teamEdit">+ New team</button></div><div class="card tw"><table><tr><th>Team</th><th>Type</th><th>Head POC</th><th>Members</th><th></th></tr>
@@ -1118,6 +1167,9 @@ const A = {
   openAtt: (el, e) => { e.preventDefault(); const n = el.dataset.name || 'file'; previewFile({ name: n, path: el.dataset.path, mime: extMime(n) || (el.dataset.img === '1' ? 'image/jpeg' : '') }); },
   attachTask: (el, e) => { e.preventDefault(); drivePick(f => { const t = $('#ov textarea[name=description]'); if(t) t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; }); },
   attachNote: () => drivePick(f => { const t = $('#nbody'); if(!t) return; t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url + '\n'; t.dispatchEvent(new Event('input')); }),
+  aiNew: () => { S.ai = []; render(); },
+  aiSuggest: el => { if(!S.aiBusy) sendAI(el.dataset.q); },
+  aiOpen: (el, e) => { e.preventDefault(); openLink(el.dataset.link); },
   menu: () => $('#shell')?.classList.toggle('menu'), refresh: () => refreshApp(),
   theme: () => themeModal(), setTheme: el => { setTheme(el.dataset.t); themeModal(); },
   signOut: async (el, e) => { e.preventDefault(); closeModal(); await dropPush(); await sb.auth.signOut(); },
@@ -1266,6 +1318,7 @@ const A = {
 const C = {
   taskTeam: el => { S.taskTeam = el.value; paintTasks(); },
   calWho: el => { S.calWho = el.value; render(); },
+  setAI: async el => { const { error } = await sb.from('profiles').update({ ai_access: el.checked }).eq('id', el.dataset.id); if(fail(error)){ el.checked = !el.checked; return; } toast(el.checked ? 'Assistant allowed' : 'Assistant turned off'); },
   fileTeam: el => { S.fileTeam = el.value; S.drivePath = []; S.folderId = null; render(); },
   setRole: async el => { const { error } = await sb.from('profiles').update({ role: el.value }).eq('id', el.dataset.id); if(!fail(error)) toast('Role updated'); render(); },
 };
