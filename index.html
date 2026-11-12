@@ -136,6 +136,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
 .ov{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;padding:14px;z-index:50}
 .modal{background:var(--panel);border-radius:12px;width:100%;max-width:520px;max-height:92vh;overflow:auto;padding:22px}
 .modal.wide{max-width:680px}
+.modal.xl{max-width:980px}
 .pick{border:1px solid var(--line);border-radius:9px;max-height:170px;overflow:auto;padding:6px 10px;background:var(--field)}
 .pick label{display:flex;gap:8px;align-items:center;margin:4px 0;font-weight:400;color:var(--ink);font-size:14px}
 .npanel{position:fixed;top:56px;right:14px;width:360px;max-width:calc(100vw - 28px);max-height:70vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 40px #0003;z-index:40;padding:8px}
@@ -194,7 +195,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
 #upd{position:fixed;top:0;left:0;right:0;z-index:70;background:var(--hl-bg);color:var(--hl-ink);padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:center;font-weight:500;box-shadow:0 2px 12px #0003}
 #vtitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .acct{display:flex;align-items:center;gap:7px;padding:4px 10px 4px 5px}
-@media (max-width:480px){.acctn{display:none}}
+@media (max-width:480px){.acctn{display:none}.top [data-act=theme]{display:none}}
 .themes{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:12px}
 .th{border:2px solid var(--line);border-radius:10px;padding:10px;cursor:pointer;background:var(--panel);text-align:left;color:var(--ink)}
 .th.on{border-color:var(--acc)}
@@ -279,7 +280,7 @@ let modalSubmit = null;
 function modal(title, body, onSubmit, o={}){
   closeModal();
   const ov = document.createElement('div'); ov.className = 'ov'; ov.id = 'ov';
-  ov.innerHTML = `<form class="modal ${o.wide ? 'wide' : ''}"><div class="row"><h2 class="grow">${esc(title)}</h2><button type="button" class="btn ghost" data-act="closeModal">✕</button></div>
+  ov.innerHTML = `<form class="modal ${o.wide ? 'wide' : ''} ${o.xl ? 'xl' : ''}"><div class="row"><h2 class="grow">${esc(title)}</h2><button type="button" class="btn ghost" data-act="closeModal">✕</button></div>
     ${body}<div class="err" id="merr"></div>
     <div class="row" style="justify-content:flex-end;margin-top:8px">${o.extra || ''}${onSubmit ? `<button class="btn pri" id="mok">${esc(o.ok || 'Save')}</button>` : ''}</div></form>`;
   document.body.append(ov); modalSubmit = onSubmit;
@@ -376,7 +377,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.12-10';
+const APP_VERSION = '2026.11.12-11';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -950,15 +951,45 @@ VIEWS.files = async el => {
     el.innerHTML = bar + `<div class="card tw"><table><tr><th>Name</th><th>Owner</th><th>Modified</th><th>Size</th></tr>${rows}</table></div>`;
     return;
   }
-  const { data, error } = await sb.from('files').select('*').order('created_at', { ascending:false }).limit(500);
-  if(fail(error)) return; S.files = data || [];
-  const list = S.files.filter(f => !S.fileTeam || (S.fileTeam === 'org' ? !f.team_id : f.team_id === S.fileTeam));
-  const sz = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round((b || 0) / 1024)) + ' KB';
-  el.innerHTML = `<div class="row" style="margin-bottom:12px">${scopeSel}</div>
-    <div class="card tw"><table><tr><th>Name</th><th>Shared with</th><th>Uploaded by</th><th>Size</th><th></th></tr>
-    ${list.map(f => `<tr><td><a href="#" data-act="download" data-id="${f.id}">${esc(f.name)}</a></td><td>${f.team_id ? esc(team(f.team_id)?.name || 'Team') : 'Everyone'}</td><td>${esc(nm(f.uploaded_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${sz(f.size)}</td>
-      <td>${f.uploaded_by === S.uid || isAdmin() ? `<button class="btn sm danger" data-act="delFile" data-id="${f.id}">Delete</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No files yet</td></tr>'}</table></div>`;
+  const [fr, dr] = await Promise.all([sb.from('files').select('*').order('created_at', { ascending:false }).limit(1000), sb.from('file_folders').select('*').order('name')]);
+  if(fail(fr.error)) return; if(S.view !== 'files') return;
+  S.files = fr.data || []; S.folders = dr.data || [];
+  let curF = S.folderId ? S.folders.find(x => x.id === S.folderId) : null; if(!curF) S.folderId = null;
+  head('Files', '<button class="btn" data-act="newFolder">+ Folder</button><button class="btn pri" data-act="upload">Upload</button>');
+  const inScope = x => !S.fileTeam || (S.fileTeam === 'org' ? !x.team_id : x.team_id === S.fileTeam);
+  const folders = S.folders.filter(f => curF ? f.parent_id === curF.id : (!f.parent_id && inScope(f)));
+  const list = S.files.filter(f => curF ? f.folder_id === curF.id : (!f.folder_id && inScope(f)));
+  const who = x => x.team_id ? esc(team(x.team_id)?.name || 'Team') : 'Everyone';
+  const count = id => S.files.filter(f => f.folder_id === id).length + S.folders.filter(f => f.parent_id === id).length;
+  const bar = curF ? `<button class="btn sm" data-act="folderUp">← Back</button><b class="grow">${folderTrail(curF).map(f => esc(f.name)).join(' › ')} <span class="pill gray">${who(curF)}</span></b>` : scopeSel;
+  el.innerHTML = `<div class="row wrap" style="margin-bottom:12px">${bar}</div>
+    <div class="card tw"><table><tr><th>Name</th><th>Shared with</th><th>Added by</th><th>Size</th><th></th></tr>
+    ${folders.map(f => `<tr><td><a href="#" data-act="openFolder" data-id="${f.id}"><b>📁 ${esc(f.name)}</b></a></td><td>${who(f)}</td><td>${esc(nm(f.created_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${count(f.id)} item${count(f.id) === 1 ? '' : 's'}</td>
+      <td>${f.created_by === S.uid || isAdmin() ? `<div class="row"><button class="btn sm" data-act="renameFolder" data-id="${f.id}">Rename</button><button class="btn sm danger" data-act="delFolder" data-id="${f.id}">Delete</button></div>` : ''}</td></tr>`).join('')}
+    ${list.map(f => `<tr><td><a href="#" data-act="previewFile" data-id="${f.id}">${esc(f.name)}</a></td><td>${who(f)}</td><td>${esc(nm(f.uploaded_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${fmtSize(f.size)}</td>
+      <td>${f.uploaded_by === S.uid || isAdmin() ? `<div class="row"><button class="btn sm" data-act="moveFile" data-id="${f.id}">Move</button><button class="btn sm danger" data-act="delFile" data-id="${f.id}">Delete</button></div>` : ''}</td></tr>`).join('')}
+    ${folders.length || list.length ? '' : `<tr><td colspan="5" class="empty">${curF ? 'This folder is empty. Use Upload to add files.' : 'No files yet'}</td></tr>`}</table></div>`;
 };
+function folderTrail(f){ const out = []; let x = f, n = 0; while(x && n++ < 20){ out.unshift(x); x = x.parent_id ? S.folders.find(y => y.id === x.parent_id) : null; } return out; }
+const extMime = n => ({ pdf:'application/pdf', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', heic:'image/heic',
+  mp4:'video/mp4', mov:'video/quicktime', webm:'video/webm', mp3:'audio/mpeg', wav:'audio/wav', m4a:'audio/mp4', txt:'text/plain', csv:'text/csv', md:'text/markdown', json:'application/json', log:'text/plain' })[(String(n).split('.').pop() || '').toLowerCase()] || '';
+async function previewFile(f){
+  const mime = f.mime || extMime(f.name);
+  const [v, dl] = await Promise.all([sb.storage.from('files').createSignedUrl(f.path, 900), sb.storage.from('files').createSignedUrl(f.path, 900, { download: f.name })]);
+  if(fail(v.error)) return; const url = v.data.signedUrl; const dlUrl = (dl.data && dl.data.signedUrl) || url;
+  const box = 'max-width:100%;max-height:72vh;display:block;margin:0 auto;border-radius:6px';
+  let body;
+  if(/^image\//.test(mime)) body = `<img src="${esc(url)}" alt="${esc(f.name)}" style="${box}">`;
+  else if(mime === 'application/pdf') body = `<iframe src="${esc(url)}" title="${esc(f.name)}" style="width:100%;height:72vh;border:1px solid var(--line);border-radius:6px;background:#fff"></iframe>`;
+  else if(/^video\//.test(mime)) body = `<video src="${esc(url)}" controls playsinline style="${box}"></video>`;
+  else if(/^audio\//.test(mime)) body = `<audio src="${esc(url)}" controls style="width:100%"></audio>`;
+  else if((/^text\//.test(mime) || mime === 'application/json') && (f.size || 0) <= 1048576){
+    let t = ''; try { t = await (await fetch(url)).text(); } catch(x){ t = 'Could not load a preview.'; }
+    body = `<pre style="white-space:pre-wrap;word-break:break-word;max-height:72vh;overflow:auto;background:var(--soft2);padding:12px;border-radius:6px;margin:0;font-size:13px">${esc(t.slice(0, 200000))}</pre>`;
+  } else body = `<div class="empty">There is no built-in preview for this type of file (${esc((f.name.split('.').pop() || 'file').toUpperCase())}). Download it to open.</div>`;
+  modal(f.name, `<div style="margin-top:12px">${body}</div>`, null, { xl:true, noFocus:true,
+    extra: `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener" style="text-decoration:none">Open in new tab</a><a class="btn pri" href="${esc(dlUrl)}" target="_blank" rel="noopener" style="text-decoration:none">Download</a>` });
+}
 
 // ---------- people ----------
 VIEWS.people = el => {
@@ -1084,9 +1115,7 @@ const A = {
     $('#devfile').addEventListener('change', e => { const fl = [...e.target.files]; closeModal(); addPending(fl); }); },
   attachDrive: () => { closeModal(); drivePick(f => { const b = $('#mbox'); if(!b) return; b.value = (b.value ? b.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; b.dispatchEvent(new Event('input')); b.focus(); }); },
   rmPend: el => { (S.pending || []).splice(+el.dataset.i, 1); paintPend(); },
-  openAtt: async (el, e) => { e.preventDefault(); const img = el.dataset.img === '1';
-    const { data, error } = await sb.storage.from('files').createSignedUrl(el.dataset.path, 300, img ? undefined : { download: el.dataset.name }); if(fail(error)) return;
-    const a = document.createElement('a'); a.href = data.signedUrl; a.target = '_blank'; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove(); },
+  openAtt: (el, e) => { e.preventDefault(); const n = el.dataset.name || 'file'; previewFile({ name: n, path: el.dataset.path, mime: extMime(n) || (el.dataset.img === '1' ? 'image/jpeg' : '') }); },
   attachTask: (el, e) => { e.preventDefault(); drivePick(f => { const t = $('#ov textarea[name=description]'); if(t) t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; }); },
   attachNote: () => drivePick(f => { const t = $('#nbody'); if(!t) return; t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url + '\n'; t.dispatchEvent(new Event('input')); }),
   menu: () => $('#shell')?.classList.toggle('menu'), refresh: () => refreshApp(),
@@ -1181,13 +1210,37 @@ const A = {
         await gapi('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id', { method:'POST', body: fd });
         toast('Uploaded to Google Drive'); render(); }, { ok:'Upload' });
       return; }
-    const tl = isAdmin() ? S.teams : myTeams();
-    modal('Upload a file', `<label>File (up to 50 MB)</label><input type="file" name="file" required><label>Who can see it</label><select name="team">${teamOpts('', 'Everyone in the company', tl)}</select>`, async f => {
-      const file = f.get('file'); if(!file || !file.size) throw new Error('Choose a file'); if(file.size > 52428800) throw new Error('File is larger than 50 MB');
-      const tid = f.get('team') || null; const path = `${tid || 'org'}/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_')}`;
-      const up = await sb.storage.from('files').upload(path, file); if(up.error) throw up.error;
-      const { error } = await sb.from('files').insert({ name: file.name, path, size: file.size, mime: file.type || null, team_id: tid, uploaded_by: S.uid });
-      if(error){ await sb.storage.from('files').remove([path]); throw error; } toast('Uploaded'); render(); }, { ok:'Upload' }); },
+    const tl = isAdmin() ? S.teams : myTeams(); const fol = S.view === 'files' && S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
+    const preset = S.view === 'files' && S.fileTeam && S.fileTeam !== 'org' && tl.some(t => t.id === S.fileTeam) ? S.fileTeam : '';
+    modal('Upload files', `<label>Files (up to 50 MB each)</label><input type="file" name="file" required multiple>
+      ${fol ? `<p class="sm mut">These go into the folder “${esc(fol.name)}”, visible to ${fol.team_id ? esc(team(fol.team_id)?.name || 'the team') : 'everyone in the company'}.</p>` : `<label>Who can see them</label><select name="team">${teamOpts(preset, 'Everyone in the company', tl)}</select>`}`, async f => {
+      const files = f.getAll('file').filter(x => x && x.size); if(!files.length) throw new Error('Choose at least one file');
+      const big = files.find(x => x.size > 52428800); if(big) throw new Error(big.name + ' is larger than 50 MB');
+      const tid = fol ? fol.team_id : (f.get('team') || null);
+      for(const file of files){
+        const path = `${tid || 'org'}/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
+        const up = await sb.storage.from('files').upload(path, file, { contentType: file.type || undefined }); if(up.error) throw up.error;
+        const { error } = await sb.from('files').insert({ name: file.name, path, size: file.size, mime: file.type || null, team_id: tid, folder_id: fol ? fol.id : null, uploaded_by: S.uid });
+        if(error){ await sb.storage.from('files').remove([path]); throw error; }
+      }
+      toast(files.length > 1 ? files.length + ' files uploaded' : 'Uploaded'); render(); }, { ok:'Upload' }); },
+  previewFile: (el, e) => { e.preventDefault(); const f = S.files.find(x => x.id === el.dataset.id); if(f) previewFile(f); },
+  openFolder: (el, e) => { e.preventDefault(); S.folderId = el.dataset.id; render(); },
+  folderUp: () => { const c = (S.folders || []).find(x => x.id === S.folderId); S.folderId = c ? c.parent_id : null; render(); },
+  newFolder: () => { const tl = isAdmin() ? S.teams : myTeams(); const par = S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
+    const preset = S.fileTeam && S.fileTeam !== 'org' && tl.some(t => t.id === S.fileTeam) ? S.fileTeam : '';
+    modal('New folder', `<label>Folder name</label><input name="name" required maxlength="120" placeholder="e.g. Diwali campaign, Store launch – Pune">
+      ${par ? `<p class="sm mut">Created inside “${esc(par.name)}”, with the same audience.</p>` : `<label>Who can see it</label><select name="team">${teamOpts(preset, 'Everyone in the company', tl)}</select>`}`, async f => {
+      const { data, error } = await sb.from('file_folders').insert({ name: f.get('name').trim(), team_id: par ? par.team_id : (f.get('team') || null), parent_id: par ? par.id : null, created_by: S.uid }).select().single();
+      if(error) throw error; S.folderId = data.id; if(!par) S.fileTeam = ''; toast('Folder created'); render(); }, { ok:'Create folder' }); },
+  renameFolder: el => { const fo = S.folders.find(x => x.id === el.dataset.id);
+    modal('Rename folder', `<label>Folder name</label><input name="name" required maxlength="120" value="${esc(fo.name)}">`, async f => { const { error } = await sb.from('file_folders').update({ name: f.get('name').trim() }).eq('id', fo.id); if(error) throw error; render(); }); },
+  delFolder: el => { const fo = S.folders.find(x => x.id === el.dataset.id);
+    modal('Delete the folder “' + fo.name + '”?', '<p class="mut">The folder and its sub-folders are removed. The files inside are kept and move back to the main Files list.</p>', async () => { const { error } = await sb.from('file_folders').delete().eq('id', fo.id); if(error) throw error; toast('Folder deleted'); render(); }, { ok:'Delete folder' }); },
+  moveFile: el => { const fi = S.files.find(x => x.id === el.dataset.id); const cands = (S.folders || []).filter(x => (x.team_id || null) === (fi.team_id || null));
+    modal('Move “' + fi.name + '”', cands.length ? `<label>Move to</label><select name="folder">${opts(cands.map(x => ({ id: x.id, name: folderTrail(x).map(y => y.name).join(' › ') })), fi.folder_id, 'Main list (no folder)')}</select>
+      <p class="sm mut">Only folders with the same audience (${fi.team_id ? esc(team(fi.team_id)?.name || 'team') : 'everyone'}) are listed.</p>` : `<p>There are no folders for this file's audience (${fi.team_id ? esc(team(fi.team_id)?.name || 'team') : 'everyone'}) yet. Create one with “+ New folder”.</p>`,
+      cands.length ? async f => { const { error } = await sb.from('files').update({ folder_id: f.get('folder') || null }).eq('id', fi.id); if(error) throw error; toast('Moved'); render(); } : null, { ok:'Move' }); },
   download: async (el, e) => { e.preventDefault(); const f = S.files.find(x => x.id === el.dataset.id); const { data, error } = await sb.storage.from('files').createSignedUrl(f.path, 120, { download: f.name });
     if(fail(error)) return; const a = document.createElement('a'); a.href = data.signedUrl; a.target = '_blank'; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove(); },
   delFile: el => { const f = S.files.find(x => x.id === el.dataset.id);
@@ -1213,7 +1266,7 @@ const A = {
 const C = {
   taskTeam: el => { S.taskTeam = el.value; paintTasks(); },
   calWho: el => { S.calWho = el.value; render(); },
-  fileTeam: el => { S.fileTeam = el.value; S.drivePath = []; render(); },
+  fileTeam: el => { S.fileTeam = el.value; S.drivePath = []; S.folderId = null; render(); },
   setRole: async el => { const { error } = await sb.from('profiles').update({ role: el.value }).eq('id', el.dataset.id); if(!fail(error)) toast('Role updated'); render(); },
 };
 document.addEventListener('click', e => {
