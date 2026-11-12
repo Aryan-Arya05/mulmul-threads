@@ -7,7 +7,11 @@ self.addEventListener('push', e => {
   try { d = e.data.json(); } catch (_) { d = { title: 'Mulmul Threads', body: e.data ? e.data.text() : '' }; }
   const opts = { body: d.body || '', icon: 'icon-192.png', badge: 'icon-192.png', data: { link: d.link || '' } };
   if (d.link) { opts.tag = d.link; opts.renotify = true; }
-  e.waitUntil(self.registration.showNotification(d.title || 'Mulmul Threads', opts));
+  const jobs = [self.registration.showNotification(d.title || 'Mulmul Threads', opts)];
+  if (typeof d.badge === 'number' && self.navigator && self.navigator.setAppBadge) {
+    jobs.push(d.badge ? self.navigator.setAppBadge(d.badge).catch(() => {}) : self.navigator.clearAppBadge().catch(() => {}));
+  }
+  e.waitUntil(Promise.all(jobs));
 });
 self.addEventListener('notificationclick', e => {
   e.notification.close();

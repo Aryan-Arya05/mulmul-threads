@@ -147,10 +147,12 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
 
 @media (max-width:820px){
   .shell{grid-template-columns:1fr;grid-template-rows:1fr auto}
-  .side{flex-direction:row;order:2;padding:6px;overflow-x:auto;gap:2px}
-  .side .brand,.side .me{display:none}
-  .nav{flex-direction:column;gap:2px;font-size:11px;padding:6px 10px;min-width:62px;align-items:center}
-  .nav .badge{margin:0;position:absolute;transform:translate(16px,-4px)}
+  .side{position:fixed;top:0;bottom:0;left:0;width:272px;max-width:84vw;z-index:45;transform:translateX(-102%);transition:transform .2s ease;box-shadow:0 0 40px #0006}
+  .shell.menu .side{transform:none}
+  .shell.menu .scrim{display:block}
+  .nav{padding:12px 14px;font-size:16px}
+  .tabbar{display:flex}
+  .main{grid-row:1}
   .view{padding:14px}
   .chat,.notes{grid-template-columns:1fr}
   .chat.open .clist,.notes.open .nlist{display:none}
@@ -163,6 +165,16 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
   .top{padding:10px 12px;gap:6px}
   .top .btn{padding:6px 10px;font-size:13px}
 }
+.ico{width:22px;height:22px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.scrim{display:none;position:fixed;inset:0;background:#0009;z-index:44}
+.tabbar{display:none;background:var(--side);padding:6px 8px;justify-content:space-around;grid-row:2}
+.tb{position:relative;border:0;background:none;color:var(--side-mut);padding:10px 18px;border-radius:12px;cursor:pointer;display:flex}
+.tb .ico{width:26px;height:26px}
+.tb.on{background:var(--side-on);color:var(--side-on-ink)}
+.tb .badge{position:absolute;top:2px;right:6px;background:#ffdcdc;color:#282828}
+.navsep{border-top:1px solid var(--side-hover);margin:8px 6px}
+@media (max-width:820px){.tabbar{display:flex}}
+#upd{position:fixed;top:0;left:0;right:0;z-index:70;background:var(--hl-bg);color:var(--hl-ink);padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:center;font-weight:500;box-shadow:0 2px 12px #0003}
 #vtitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .acct{display:flex;align-items:center;gap:7px;padding:4px 10px 4px 5px}
 @media (max-width:480px){.acctn{display:none}}
@@ -308,7 +320,7 @@ async function boot(session){
     S.me = me;
     if(!me.active){ renderPending(); return; }
     await loadBase(); renderShell(); subscribe();
-    await Promise.all([loadChannels(), loadNotifs(), syncPush(false)]);
+    await Promise.all([loadChannels(), loadNotifs(), syncPush(false)]); checkUpdate();
     route();
     try { const q = new URLSearchParams(location.search).get('open'); if(q){ history.replaceState(null, '', location.pathname + location.hash); openLink(q); } } catch(e){}
   } finally { booting = false; }
@@ -321,24 +333,64 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const NAV = [['home','Home','⌂'],['chat','Chat','✉'],['tasks','Tasks','✓'],['calendar','Calendar','▦'],['notes','Notes','✎'],['files','Files','▤'],['people','People','☺']];
+const APP_VERSION = '2026.11.12-6';
+const ICONS = {
+  home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
+  tasks:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  notes:'<path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h7"/>',
+  files:'<path d="M3 6h6l2 2h10v11H3z"/>',
+  people:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.8a3.5 3.5 0 0 1 0 6.4M17.5 14.5a6.5 6.5 0 0 1 4 5.5"/>',
+  overview:'<path d="M5 20V10M11 20V4M17 20v-7M22 20H2"/>',
+  admin:'<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
+  menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
+  refresh:'<path d="M20 11a8 8 0 1 0-2.3 6.3M20 4v7h-7"/>',
+  out:'<path d="M10 4H5v16h5M14 8l4 4-4 4M18 12H9"/>'
+};
+const ico = k => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
+const NAV = [['home','Home'],['chat','Chat'],['tasks','Tasks'],['calendar','Calendar'],['notes','Notes'],['files','Files'],['people','People']];
 function renderShell(){
-  const nav = NAV.concat(isAdmin() ? [['overview','Overview','◔'],['admin','Admin','⚙']] : []);
-  $('#app').innerHTML = `<div class="shell"><nav class="side"><div class="brand"><img class="logo" src="logo-white.png" alt="Mulmul Threads"></div>
-    ${nav.map(([k,l,i]) => `<button class="nav" data-act="go" data-v="${k}" id="nav-${k}"><span>${i}</span><span>${l}</span>${k === 'chat' ? '<span class="badge" id="chatBadge" hidden></span>' : ''}</button>`).join('')}
-    <div class="me"><b>${esc(S.me.full_name)}</b><br><span style="opacity:.7">${esc(S.me.role)}</span><br><a href="#" data-act="signOut">Sign out</a></div></nav>
+  const nav = NAV.concat(isAdmin() ? [['overview','Overview'],['admin','Admin']] : []);
+  const badge = '<span class="badge chatBadge" hidden></span>';
+  $('#app').innerHTML = `<div class="shell" id="shell"><div class="scrim" data-act="menu"></div>
+    <nav class="side"><div class="brand"><img class="logo" src="logo-white.png" alt="Mulmul Threads"></div>
+    ${nav.map(([k,l]) => `<button class="nav" data-act="go" data-v="${k}" data-nav="${k}" id="nav-${k}">${ico(k)}<span>${l}</span>${k === 'chat' ? badge : ''}</button>`).join('')}
+    <div class="navsep"></div>
+    <button class="nav" data-act="refresh">${ico('refresh')}<span>Refresh app</span></button>
+    <button class="nav" data-act="signOut">${ico('out')}<span>Sign out</span></button>
+    <div class="me"><b>${esc(S.me.full_name)}</b><br><span style="opacity:.7">${esc(S.me.role)} · v${APP_VERSION}</span></div></nav>
     <div class="main"><div class="top"><h2 class="grow" id="vtitle"></h2><div id="vact" class="row"></div>
       <button class="btn ghost" data-act="theme" title="Appearance" aria-label="Appearance"><svg width="18" height="18" viewBox="0 0 20 20" style="vertical-align:-3px"><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 2a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
       <button class="btn bell" data-act="togglePanel" title="Notifications">🔔<span class="badge" id="nBadge" hidden></span></button>
       <button class="btn acct" data-act="account" title="Account and sign out"><span class="av" style="width:26px;height:26px;font-size:11px">${esc(ini(S.uid))}</span><span class="acctn">${esc(S.me.full_name.split(' ')[0])}</span><span class="mut">▾</span></button></div>
-    <div class="view" id="view"></div></div></div>`;
+    <div class="view" id="view"></div></div>
+    <nav class="tabbar">${['home','chat','tasks','calendar'].map(k => `<button class="tb" data-act="go" data-v="${k}" data-nav="${k}" title="${k}" aria-label="${k}">${ico(k)}${k === 'chat' ? badge : ''}</button>`).join('')}
+      <button class="tb" data-act="menu" data-nav="more" title="Menu" aria-label="Menu">${ico('menu')}</button></nav></div>`;
+}
+// ---- updates + app-icon badge
+async function checkUpdate(){
+  try { const r = await fetch('version.json?t=' + Date.now(), { cache:'no-store' }); if(!r.ok) return; const j = await r.json();
+    if(j.v && j.v !== APP_VERSION && !$('#upd')){ const b = document.createElement('div'); b.id = 'upd';
+      b.innerHTML = '<span>A new version of Threads is ready.</span><button class="btn pri sm" data-act="refresh">Update now</button>'; document.body.append(b); } } catch(e){}
+}
+async function refreshApp(){
+  toast('Updating…');
+  try { if(canSW){ const reg = await navigator.serviceWorker.getRegistration(); if(reg) await reg.update(); }
+    await fetch(location.pathname, { cache:'reload' }); } catch(e){}
+  location.reload();
+}
+function setBadge(){
+  const n = (S.chatUnread || 0) + S.notifs.filter(x => !x.read_at).length;
+  try { if(navigator.setAppBadge){ if(n) navigator.setAppBadge(n).catch(() => {}); else navigator.clearAppBadge().catch(() => {}); } } catch(e){}
 }
 const VIEWS = {};
-function go(v, arg){ S.view = v; try { history.replaceState(null, '', '#' + v); } catch(e){} render(arg); }
+function go(v, arg){ $('#shell')?.classList.remove('menu'); S.view = v; try { history.replaceState(null, '', '#' + v); } catch(e){} render(arg); }
 function route(){ const v = location.hash.slice(1); go(VIEWS[v] ? v : 'home'); }
 function render(arg){
   if(!VIEWS[S.view] || ((S.view === 'admin' || S.view === 'overview') && !isAdmin())) S.view = 'home';
-  document.querySelectorAll('.nav').forEach(n => n.classList.toggle('on', n.id === 'nav-' + S.view));
+  const main4 = ['home','chat','tasks','calendar'].includes(S.view);
+  document.querySelectorAll('[data-nav]').forEach(n => n.classList.toggle('on', n.dataset.nav === S.view || (n.dataset.nav === 'more' && !main4)));
   const el = $('#view'); el.className = 'view' + (['chat','notes'].includes(S.view) ? ' flush' : '');
   $('#vact').innerHTML = ''; el.innerHTML = '<div class="empty">Loading…</div>';
   VIEWS[S.view](el, arg);
@@ -366,7 +418,7 @@ function onMsg(p){
 
 // ---------- notifications ----------
 async function loadNotifs(){ const { data } = await sb.from('notifications').select('*').order('created_at', { ascending:false }).limit(50); S.notifs = data || []; paintBell(); }
-function paintBell(){ const n = S.notifs.filter(x => !x.read_at).length; const b = $('#nBadge'); if(b){ b.hidden = !n; b.textContent = n > 99 ? '99+' : n; } if(S.panel) paintPanel(); }
+function paintBell(){ const n = S.notifs.filter(x => !x.read_at).length; const b = $('#nBadge'); if(b){ b.hidden = !n; b.textContent = n > 99 ? '99+' : n; } setBadge(); if(S.panel) paintPanel(); }
 function paintPanel(){
   let el = $('#npanel'); if(!S.panel){ if(el) el.remove(); return; }
   if(!el){ el = document.createElement('div'); el.id = 'npanel'; el.className = 'npanel'; document.body.append(el); }
@@ -456,7 +508,7 @@ async function loadChannels(){
   const { data, error } = await sb.rpc('my_channels'); if(fail(error)) return;
   S.channels = data || [];
   const n = S.channels.reduce((a, c) => a + (c.id === S.chan && S.view === 'chat' ? 0 : c.unread), 0);
-  const b = $('#chatBadge'); if(b){ b.hidden = !n; b.textContent = n > 99 ? '99+' : n; }
+  S.chatUnread = n; document.querySelectorAll('.chatBadge').forEach(b => { b.hidden = !n; b.textContent = n > 99 ? '99+' : n; }); setBadge();
   if(S.view === 'chat') paintChanList();
 }
 function paintChanList(){
@@ -800,7 +852,9 @@ const A = {
       <div class="grid" style="gap:8px"><button type="button" class="btn" data-act="editMe">Edit my profile</button>
       <button type="button" class="btn" data-act="theme">Appearance (light, dark, eye care)</button>
       ${st === 'off' ? '<button type="button" class="btn" data-act="enablePush">Turn on alerts on this device</button>' : st === 'on' ? '<button type="button" class="btn" data-act="disablePush">Turn off alerts on this device</button>' : ''}
+      <button type="button" class="btn" data-act="refresh">Refresh app (get the latest version)</button>
       <button type="button" class="btn pri" data-act="signOut">Sign out</button></div>`, null, { noFocus:true }); },
+  menu: () => $('#shell')?.classList.toggle('menu'), refresh: () => refreshApp(),
   theme: () => themeModal(), setTheme: el => { setTheme(el.dataset.t); themeModal(); },
   signOut: async (el, e) => { e.preventDefault(); closeModal(); await dropPush(); await sb.auth.signOut(); },
   enablePush: async () => { const ok = await syncPush(true); closeModal(); if(ok) toast('Alerts are on for this device'); if(S.view === 'home') render(); paintPanel(); },
@@ -918,7 +972,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('change', e => { const el = e.target.closest('[data-chg]'); if(el && C[el.dataset.chg]) C[el.dataset.chg](el); });
 window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if(S.me && S.me.active && VIEWS[v] && v !== S.view) go(v); });
-document.addEventListener('visibilitychange', () => { if(!document.hidden && S.me && S.me.active){ loadChannels(); loadNotifs(); } });
+document.addEventListener('visibilitychange', () => { if(!document.hidden && S.me && S.me.active){ loadChannels(); loadNotifs(); checkUpdate(); } });
 sb.auth.onAuthStateChange((ev, session) => { setTimeout(() => boot(session), 0); });
 </script>
 </body>
