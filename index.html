@@ -226,6 +226,12 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
 .msg.flash{animation:flash 1.8s ease}
 @keyframes flash{0%,60%{background:var(--hl-bg)}100%{background:transparent}}
 .ptitle{cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pinb{display:none;border:0;background:none;color:var(--mut);padding:0 2px;cursor:pointer;flex:none}
+.pinb .ico{width:16px;height:16px}
+.pinb.on{display:flex;color:var(--ink)}
+.pinb.on .ico{fill:currentColor}
+@media (hover:hover){.ch:hover .pinb{display:flex}}
+#pinbtn.on .ico{fill:currentColor}
 #upd{position:fixed;top:0;left:0;right:0;z-index:70;background:var(--hl-bg);color:var(--hl-ink);padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:center;font-weight:500;box-shadow:0 2px 12px #0003}
 #vtitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .acct{display:flex;align-items:center;gap:7px;padding:4px 10px 4px 5px}
@@ -412,7 +418,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.13-1';
+const APP_VERSION = '2026.11.13-2';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -427,6 +433,7 @@ const ICONS = {
   refresh:'<path d="M20 11a8 8 0 1 0-2.3 6.3M20 4v7h-7"/>',
   out:'<path d="M10 4H5v16h5M14 8l4 4-4 4M18 12H9"/>',
   collapse:'<path d="M14 7l-5 5 5 5M19 5v14"/>',
+  pin:'<path d="M9 3.5h6l-.8 6.2 3.3 3.1V15H6.5v-2.2l3.3-3.1z"/><path d="M12 15v5.5"/>',
   search:'<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   assistant:'<path d="M11 3l1.9 5.6L18.5 10.5l-5.6 1.9L11 18l-1.9-5.6L3.5 10.5l5.6-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>'
@@ -665,9 +672,11 @@ async function loadChannels(){
 }
 function paintChanList(){
   const el = $('#clist'); if(!el) return;
-  const row = c => `<div class="ch ${c.id === S.chan ? 'on' : ''} ${c.unread && c.id !== S.chan ? 'unread' : ''}" data-act="openChan" data-id="${c.id}"><span class="grow" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(chanName(c))}</span>${c.unread && c.id !== S.chan ? `<span class="badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div>`;
-  const by = f => S.channels.filter(f).sort((a,b) => (a.name || '').localeCompare(b.name || ''));
-  const dms = S.channels.filter(c => c.kind === 'dm').sort((a,b) => (b.last_at || '').localeCompare(a.last_at || ''));
+  const row = c => `<div class="ch ${c.id === S.chan ? 'on' : ''} ${c.unread && c.id !== S.chan ? 'unread' : ''}" data-act="openChan" data-id="${c.id}"><span class="grow" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(chanName(c))}</span>${c.unread && c.id !== S.chan ? `<span class="badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}<button type="button" class="pinb ${c.pinned ? 'on' : ''}" data-act="togglePin" data-id="${c.id}" title="${c.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${c.pinned ? 'Unpin' : 'Pin to top'}">${ico('pin')}</button></div>`;
+  const tname = c => c.team_id && c.kind !== 'dm' ? { ...c, name: (team(c.team_id)?.name || '') + ' · ' + c.name } : c;
+  const pinned = S.channels.filter(c => c.pinned).sort((a,b) => chanName(a).localeCompare(chanName(b)));
+  const by = f => S.channels.filter(c => !c.pinned && f(c)).sort((a,b) => (a.name || '').localeCompare(b.name || ''));
+  const dms = S.channels.filter(c => c.kind === 'dm' && !c.pinned).sort((a,b) => (b.last_at || '').localeCompare(a.last_at || ''));
   const teamCh = by(c => c.kind !== 'dm' && c.team_id);
   const q = (S.chatQ || '').trim().toLowerCase();
   let body;
@@ -678,7 +687,8 @@ function paintChanList(){
       <h4>Channels and groups</h4>${chans.map(c => row(c.team_id ? { ...c, name: (team(c.team_id)?.name || '') + ' · ' + c.name } : c)).join('') || '<div class="mut sm" style="padding:4px 9px">Nothing matches</div>'}
       <h4>Messages</h4><div class="ch" data-act="searchMsgsQ">🔎 <span class="grow">Search messages for “${esc(S.chatQ.trim())}”</span></div>`;
   } else {
-    body = `<h4>Announcements</h4>${by(c => c.kind === 'announcement' && !c.team_id).map(row).join('')}
+    body = `${pinned.length ? '<h4>Pinned</h4>' + pinned.map(c => row(tname(c))).join('') : ''}
+    <h4>Announcements</h4>${by(c => c.kind === 'announcement' && !c.team_id).map(row).join('')}
     <h4>Channels <button class="btn sm ghost" data-act="newChannel">+</button></h4>${by(c => c.kind === 'channel' && !c.team_id && !c.is_private).map(row).join('')}
     <h4>Groups <button class="btn sm ghost" data-act="newGroup">+</button></h4>${by(c => c.kind === 'channel' && !c.team_id && c.is_private).map(row).join('') || '<div class="mut sm" style="padding:4px 9px">Pick people and start a group with +</div>'}
     ${teamCh.length ? '<h4>Team spaces</h4>' + teamCh.map(c => row({ ...c, name: (team(c.team_id)?.name || '') + ' · ' + c.name })).join('') : ''}
@@ -707,6 +717,7 @@ async function openChan(id){
   $('#chat').classList.add('open'); c.unread = 0; paintChanList();
   const canPost = c.kind !== 'announcement' || isAdmin() || (c.team_id && team(c.team_id)?.head_id === S.uid);
   $('#pane').innerHTML = `<div class="phead"><button class="btn sm back" data-act="chatBack">←</button><h3 class="grow ptitle" data-act="chanInfo" title="Details, media, links and docs">${esc(chanName(c))}</h3>
+      <button class="btn sm ghost ${c.pinned ? 'on' : ''}" id="pinbtn" data-act="togglePin" title="Pin or unpin this conversation" aria-label="Pin or unpin this conversation" style="display:flex">${ico('pin')}</button>
       <button class="btn sm ghost" data-act="chanSearch" title="Search in this conversation" aria-label="Search in this conversation" style="display:flex">${ico('search')}</button>
       <button class="btn sm ghost" data-act="chanInfo" title="Details, media, links and docs" aria-label="Details, media, links and docs" style="display:flex">${ico('info')}</button>
       ${c.kind === 'announcement' && canPost ? '<button class="btn sm" data-act="readers">Read by</button>' : ''}
@@ -1290,6 +1301,9 @@ const A = {
   sideToggle: () => { const on = $('#shell').classList.toggle('mini'); try { localStorage.setItem('mt-side', on ? 'mini' : 'full'); } catch(e){} },
   closeDrawer: () => closeDrawer(), chanSearch: () => chanSearch(), chanInfo: () => chanInfo(), infoTab: el => chanInfo(el.dataset.t),
   jumpMsg: (el, e) => { e.preventDefault(); jumpMsg(el.dataset.id, el.dataset.at); },
+  togglePin: async el => { const id = el.dataset.id || S.chan; const c = S.channels.find(x => x.id === id); if(!c) return; const on = !c.pinned;
+    const { error } = await sb.rpc('set_pin', { c: id, p_on: on }); if(fail(error)) return; c.pinned = on; paintChanList();
+    if(id === S.chan) $('#pinbtn')?.classList.toggle('on', on); toast(on ? 'Pinned to the top' : 'Unpinned'); },
   menu: () => $('#shell')?.classList.toggle('menu'), refresh: () => refreshApp(),
   theme: () => themeModal(), setTheme: el => { setTheme(el.dataset.t); themeModal(); },
   signOut: async (el, e) => { e.preventDefault(); closeModal(); await dropPush(); await sb.auth.signOut(); },
