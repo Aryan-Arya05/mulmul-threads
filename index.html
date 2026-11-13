@@ -349,7 +349,7 @@ function renderAuth(msg=''){
     ${authMode === 'in' ? '<div style="text-align:right;margin-top:6px"><a href="#" class="sm" data-act="forgot">Forgot password?</a></div>' : ''}
     <div class="err" id="aerr">${esc(msg)}</div>
     <button class="btn pri" style="width:100%">${authMode === 'in' ? 'Sign in' : 'Create account'}</button>
-    ${GOOGLE_SIGNIN ? '<button type="button" class="btn" style="width:100%;margin-top:8px" data-act="google">Continue with Google</button>' : ''}
+    ${GOOGLE_SIGNIN ? '<button type="button" class="btn" style="width:100%;margin-top:8px" data-act="google">Continue with Google</button><p class="sm mut" style="text-align:center;margin:6px 0 0">Google sign-in is for mulmul.co accounts. Everyone else: use the email and password from your invite.</p>' : ''}
     <p class="sm mut" style="text-align:center;margin-bottom:0">${authMode === 'in' ? 'New here?' : 'Already have an account?'}
       <a href="#" data-act="authSwitch">${authMode === 'in' ? 'Create account' : 'Sign in'}</a></p></form></div>`;
   $('#authf').addEventListener('submit', async e => {
@@ -418,7 +418,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.13-3';
+const APP_VERSION = '2026.11.13-4';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -574,6 +574,9 @@ let pendingG = null;
 const G = { token:null, exp:0 };
 const GSCOPES = 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive';
 const gOn = () => !!(S.me && S.me.google_connected);
+// Google sign-in and Calendar/Drive are limited by Google to the company's own Workspace accounts
+const gDomain = () => (S.org.allowed_domain || 'mulmul.co').toLowerCase();
+const gAllowed = () => !!S.me && (S.me.email || '').toLowerCase().endsWith('@' + gDomain());
 async function gfn(body){
   const { data, error } = await sb.functions.invoke('google', { body });
   if(error){ let m = error.message; try { const j = await error.context.json(); if(j && j.error) m = j.error; } catch(x){} throw new Error(m); }
@@ -604,7 +607,7 @@ async function finishGConnect(rt){
   } catch(x){ modal('Google could not be connected', `<p>${esc(x.message || String(x))}</p>`, null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="gConnect">Try again</button>' }); }
 }
 function googleCard(what){
-  if(gOn()) return '';
+  if(gOn() || !gAllowed()) return '';
   return `<div class="card" style="margin-bottom:14px"><div class="row wrap"><div class="grow" style="min-width:200px"><b>Connect Google ${what || 'Calendar and Drive'}</b>
     <div class="sm mut">See your Google Calendar here, add Meet links to meetings, and work with Drive files, using your ${esc(S.me.email)} account.</div></div>
     <button class="btn pri" data-act="gConnect">Connect Google</button></div></div>`;
@@ -620,7 +623,8 @@ const driveId = v => { v = (v || '').trim(); if(!v) return null; const m = /fold
 const fmtSize = b => !b ? '' : b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
 let dpTimer = null;
 function drivePick(cb){
-  if(!gOn()){ modal('Connect Google first', '<p>Attaching Drive files needs your Google account connected.</p>', null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="gConnect">Connect Google</button>' }); return; }
+  if(!gOn()){ if(!gAllowed()){ modal('Google Drive is not available', `<p>Attaching from Google Drive inside Threads works only for ${esc(gDomain())} Google accounts. You can still attach files from your device, or paste a Drive link into your message.</p>`, null, { noFocus:true }); return; }
+    modal('Connect Google first', '<p>Attaching Drive files needs your Google account connected.</p>', null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="gConnect">Connect Google</button>' }); return; }
   S.driveCb = cb; $('#dov')?.remove();
   const ov = document.createElement('div'); ov.className = 'ov'; ov.id = 'dov';
   ov.innerHTML = `<div class="modal"><div class="row"><h2 class="grow">Attach from Google Drive</h2><button type="button" class="btn ghost" data-act="driveClose">✕</button></div>
@@ -1078,7 +1082,7 @@ VIEWS.files = async el => {
     S.drivePath = S.drivePath || []; const cur = S.drivePath.length ? S.drivePath[S.drivePath.length - 1].id : fsc.root;
     const bar = `<div class="row wrap" style="margin-bottom:12px">${scopeSel}${S.drivePath.length ? '<button class="btn sm" data-act="driveUp">← Back</button>' : ''}
       <b class="grow">${esc(fsc.label)}${S.drivePath.map(x => ' › ' + esc(x.name)).join('')}</b><a class="btn sm" href="https://drive.google.com/drive/folders/${esc(cur)}" target="_blank" rel="noopener" style="text-decoration:none">Open in Google Drive</a></div>`;
-    if(!gOn()){ el.innerHTML = bar + `<div class="card"><p>This space keeps its files in Google Drive.</p></div>` + googleCard('Drive'); return; }
+    if(!gOn()){ el.innerHTML = bar + `<div class="card"><p>This space keeps its files in Google Drive.</p>${gAllowed() ? '' : `<p class="mut sm">Showing them here needs a ${esc(gDomain())} Google account. Use “Open in Google Drive” above with any Google account the folder has been shared with.</p>`}</div>` + googleCard('Drive'); return; }
     let rows = '';
     try { const j = await gapi(`/drive/v3/files?q=${encodeURIComponent(`'${cur}' in parents and trashed=false`)}&fields=files(id,name,mimeType,size,modifiedTime,webViewLink,owners(displayName))&orderBy=folder,name&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true`);
       if(S.view !== 'files') return;
@@ -1259,7 +1263,7 @@ const A = {
       <div class="grid" style="gap:8px"><button type="button" class="btn" data-act="editMe">Edit my profile</button>
       <button type="button" class="btn" data-act="theme">Appearance (light, dark, eye care)</button>
       ${st === 'off' ? '<button type="button" class="btn" data-act="enablePush">Turn on alerts on this device</button>' : st === 'on' ? '<button type="button" class="btn" data-act="disablePush">Turn off alerts on this device</button>' : ''}
-      ${gOn() ? '<button type="button" class="btn" data-act="gDisconnect">Disconnect Google Calendar and Drive</button>' : '<button type="button" class="btn" data-act="gConnect">Connect Google Calendar and Drive</button>'}
+      ${gOn() ? '<button type="button" class="btn" data-act="gDisconnect">Disconnect Google Calendar and Drive</button>' : gAllowed() ? '<button type="button" class="btn" data-act="gConnect">Connect Google Calendar and Drive</button>' : ''}
       <button type="button" class="btn" data-act="refresh">Refresh app (get the latest version)</button>
       <button type="button" class="btn pri" data-act="signOut">Sign out</button></div>`, null, { noFocus:true }); },
   forgot: async (el, e) => { e.preventDefault(); const email = ($('#authf [name=email]')?.value || '').trim(); const out = $('#aerr');
@@ -1276,7 +1280,7 @@ const A = {
       async f => { await sendInvite({ email: f.get('email').trim(), full_name: f.get('full_name').trim(), title: f.get('title').trim(), role: f.get('role'), team_ids: f.getAll('team') }); return false; }, { ok:'Send invite' }); },
   reinvite: async el => { const p = P(el.dataset.id); toast('Sending…'); try { await sendInvite({ email: p.email, full_name: p.full_name, title: p.title || '', role: p.role, team_ids: [] }); } catch(x){ toast(x.message || String(x)); } },
   copyLink: async el => { try { await navigator.clipboard.writeText($('#invlink').value); toast('Link copied'); } catch(x){ $('#invlink').select(); toast('Press Ctrl+C / long-press to copy'); } },
-  gConnect: () => gConnect(),
+  gConnect: () => { if(!gAllowed()){ toast('Google connection is only for ' + gDomain() + ' accounts'); return; } gConnect(); },
   gDisconnect: async () => { try { await gfn({ action:'disconnect' }); } catch(x){ toast(x.message); return; } S.me.google_connected = false; G.token = null; closeModal(); toast('Google disconnected'); render(); },
   openGEvent: el => { const e = (S.gevents || []).find(x => x.id === el.dataset.id); if(!e) return;
     modal(e.title, `<p><b>${e.allDay ? fmtDay(e.starts_at) + ' · All day' : fmtDT(e.starts_at) + ' – ' + (sameDay(e.starts_at, e.ends_at) ? fmtTime(e.ends_at) : fmtDT(e.ends_at))}</b><br><span class="mut">From your Google Calendar${e.organizer ? ' · organised by ' + esc(e.organizer) : ''}</span></p>
@@ -1288,7 +1292,7 @@ const A = {
   driveOpen: (el, e) => { e.preventDefault(); (S.drivePath = S.drivePath || []).push({ id: el.dataset.id, name: el.dataset.name }); render(); },
   driveUp: () => { (S.drivePath || []).pop(); render(); },
   attachChat: () => { modal('Attach', `<label class="choice"><span style="font-size:22px">📱</span><span><b>Photo or file from this device</b><br><span class="sm mut">Up to 5 files, 100 MB each. Only people in this conversation can open them.</span></span><input type="file" id="devfile" multiple hidden></label>
-      <button type="button" class="choice" data-act="attachDrive"><span style="font-size:22px">📁</span><span><b>From Google Drive</b><br><span class="sm mut">Shares a link to a file in your Drive.</span></span></button>`, null, { noFocus:true });
+      ${gOn() || gAllowed() ? `<button type="button" class="choice" data-act="attachDrive"><span style="font-size:22px">📁</span><span><b>From Google Drive</b><br><span class="sm mut">Shares a link to a file in your Drive.</span></span></button>` : ''}`, null, { noFocus:true });
     $('#devfile').addEventListener('change', e => { const fl = [...e.target.files]; closeModal(); addPending(fl); }); },
   attachDrive: () => { closeModal(); drivePick(f => { const b = $('#mbox'); if(!b) return; b.value = (b.value ? b.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; b.dispatchEvent(new Event('input')); b.focus(); }); },
   rmPend: el => { (S.pending || []).splice(+el.dataset.i, 1); paintPend(); },
