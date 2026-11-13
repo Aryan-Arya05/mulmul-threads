@@ -418,7 +418,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.13-5';
+const APP_VERSION = '2026.11.13-6';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -532,7 +532,8 @@ const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platfor
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const pushSupported = () => canSW && 'PushManager' in window && 'Notification' in window;
 function pushState(){ // on | off | blocked | ios-install | unsupported
-  if(!pushSupported()) return isIOS && !isStandalone() ? 'ios-install' : 'unsupported';
+  if(isIOS && !isStandalone()) return 'ios-install'; // iPhone/iPad only allow alerts from the home-screen app, never from a browser tab
+  if(!pushSupported()) return 'unsupported';
   if(Notification.permission === 'denied') return 'blocked';
   return Notification.permission === 'granted' && S.pushOn ? 'on' : 'off';
 }
@@ -558,8 +559,8 @@ async function dropPush(){
 function alertsCard(){
   const st = pushState();
   if(st === 'on' || st === 'unsupported') return '';
-  const msg = st === 'ios-install' ? 'To get alerts on iPhone: tap the Share button in Safari, choose <b>Add to Home Screen</b>, then open Threads from your home screen and turn alerts on.'
-    : st === 'blocked' ? 'Alerts are blocked for this site. Allow notifications in your browser or phone settings, then reload.'
+  const msg = st === 'ios-install' ? 'Alerts on iPhone only work from the home-screen app, not from this browser tab. Tap the Share button, choose <b>Add to Home Screen</b>, then open Threads from the new icon and turn alerts on there.'
+    : st === 'blocked' ? (isIOS ? 'Alerts are switched off for Threads on this iPhone. Open the iPhone <b>Settings</b> app, go to <b>Notifications</b>, choose <b>Threads</b>, turn on <b>Allow Notifications</b>, then reopen Threads.' : 'Alerts are blocked for this site. Click the padlock or settings icon in the address bar, set Notifications to Allow, then reload.')
     : 'Get an alert on this device for new messages, task reminders and meeting invites, even when Threads is closed.';
   return `<div class="card" style="margin-bottom:14px;background:var(--hl-bg);color:var(--hl-ink)"><div class="row wrap"><div class="grow" style="min-width:200px"><b>Turn on alerts</b><div class="sm">${msg}</div></div>
     ${st === 'off' ? '<button class="btn pri" data-act="enablePush">Turn on alerts</button>' : ''}</div></div>`;
