@@ -418,7 +418,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.13-4';
+const APP_VERSION = '2026.11.13-5';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -1092,25 +1092,33 @@ VIEWS.files = async el => {
     el.innerHTML = bar + `<div class="card tw"><table><tr><th>Name</th><th>Owner</th><th>Modified</th><th>Size</th></tr>${rows}</table></div>`;
     return;
   }
-  const [fr, dr] = await Promise.all([sb.from('files').select('*').order('created_at', { ascending:false }).limit(1000), sb.from('file_folders').select('*').order('name')]);
-  if(fail(fr.error)) return; if(S.view !== 'files') return;
+  const [fr, dr] = await Promise.all([sb.from('files').select('*, file_teams(team_id)').order('created_at', { ascending:false }).limit(1000), sb.from('file_folders').select('*, folder_teams(team_id)').order('name')]);
+  if(fail(fr.error) || fail(dr.error)) return; if(S.view !== 'files') return;
   S.files = fr.data || []; S.folders = dr.data || [];
   let curF = S.folderId ? S.folders.find(x => x.id === S.folderId) : null; if(!curF) S.folderId = null;
   head('Files', '<button class="btn" data-act="newFolder">+ Folder</button><button class="btn pri" data-act="upload">Upload</button>');
-  const inScope = x => !S.fileTeam || (S.fileTeam === 'org' ? !x.team_id : x.team_id === S.fileTeam);
-  const folders = S.folders.filter(f => curF ? f.parent_id === curF.id : (!f.parent_id && inScope(f)));
-  const list = S.files.filter(f => curF ? f.folder_id === curF.id : (!f.folder_id && inScope(f)));
-  const who = x => x.team_id ? esc(team(x.team_id)?.name || 'Team') : 'Everyone';
+  const inScope = a => !S.fileTeam || (S.fileTeam === 'org' ? a.all : a.teams.includes(S.fileTeam));
+  const folders = S.folders.filter(f => curF ? f.parent_id === curF.id : (!f.parent_id && inScope(folderAud(f))));
+  const list = S.files.filter(f => curF ? f.folder_id === curF.id : (!f.folder_id && inScope(fileAud(f))));
   const count = id => S.files.filter(f => f.folder_id === id).length + S.folders.filter(f => f.parent_id === id).length;
-  const bar = curF ? `<button class="btn sm" data-act="folderUp">← Back</button><b class="grow">${folderTrail(curF).map(f => esc(f.name)).join(' › ')} <span class="pill gray">${who(curF)}</span></b>` : scopeSel;
+  const mine = x => x === S.uid || isAdmin();
+  const bar = curF ? `<button class="btn sm" data-act="folderUp">← Back</button><b class="grow">${folderTrail(curF).map(f => esc(f.name)).join(' › ')} <span class="pill gray">${esc(audLabel(folderAud(curF)))}</span></b>` : scopeSel;
   el.innerHTML = `<div class="row wrap" style="margin-bottom:12px">${bar}</div>
     <div class="card tw"><table><tr><th>Name</th><th>Shared with</th><th>Added by</th><th>Size</th><th></th></tr>
-    ${folders.map(f => `<tr><td><a href="#" data-act="openFolder" data-id="${f.id}"><b>📁 ${esc(f.name)}</b></a></td><td>${who(f)}</td><td>${esc(nm(f.created_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${count(f.id)} item${count(f.id) === 1 ? '' : 's'}</td>
-      <td>${f.created_by === S.uid || isAdmin() ? `<div class="row"><button class="btn sm" data-act="renameFolder" data-id="${f.id}">Rename</button><button class="btn sm danger" data-act="delFolder" data-id="${f.id}">Delete</button></div>` : ''}</td></tr>`).join('')}
-    ${list.map(f => `<tr><td><a href="#" data-act="previewFile" data-id="${f.id}">${esc(f.name)}</a></td><td>${who(f)}</td><td>${esc(nm(f.uploaded_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${fmtSize(f.size)}</td>
-      <td>${f.uploaded_by === S.uid || isAdmin() ? `<div class="row"><button class="btn sm" data-act="moveFile" data-id="${f.id}">Move</button><button class="btn sm danger" data-act="delFile" data-id="${f.id}">Delete</button></div>` : ''}</td></tr>`).join('')}
+    ${folders.map(f => `<tr><td><a href="#" data-act="openFolder" data-id="${f.id}"><b>📁 ${esc(f.name)}</b></a></td><td>${esc(audLabel(folderAud(f)))}</td><td>${esc(nm(f.created_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${count(f.id)} item${count(f.id) === 1 ? '' : 's'}</td>
+      <td>${mine(f.created_by) ? `<div class="row">${f.parent_id ? '' : `<button class="btn sm" data-act="shareFolder" data-id="${f.id}">Share</button>`}<button class="btn sm" data-act="renameFolder" data-id="${f.id}">Rename</button><button class="btn sm danger" data-act="delFolder" data-id="${f.id}">Delete</button></div>` : ''}</td></tr>`).join('')}
+    ${list.map(f => `<tr><td><a href="#" data-act="previewFile" data-id="${f.id}">${esc(f.name)}</a></td><td>${esc(audLabel(fileAud(f)))}</td><td>${esc(nm(f.uploaded_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${fmtSize(f.size)}</td>
+      <td>${mine(f.uploaded_by) ? `<div class="row">${f.folder_id ? '' : `<button class="btn sm" data-act="shareFile" data-id="${f.id}">Share</button>`}<button class="btn sm" data-act="moveFile" data-id="${f.id}">Move</button><button class="btn sm danger" data-act="delFile" data-id="${f.id}">Delete</button></div>` : ''}</td></tr>`).join('')}
     ${folders.length || list.length ? '' : `<tr><td colspan="5" class="empty">${curF ? 'This folder is empty. Use Upload to add files.' : 'No files yet'}</td></tr>`}</table></div>`;
 };
+// who a file or folder is shared with: everyone, or a set of teams; things inside a folder follow its top folder
+const folderAud = fo => { const r = (fo && folderTrail(fo)[0]) || fo || {}; return { all: !!r.shared_all, teams: (r.folder_teams || []).map(x => x.team_id) }; };
+const fileAud = f => f.folder_id ? folderAud((S.folders || []).find(x => x.id === f.folder_id)) : { all: !!f.shared_all, teams: (f.file_teams || []).map(x => x.team_id) };
+const audLabel = a => a.all ? 'Everyone' : (a.teams.map(t => team(t)?.name).filter(Boolean).join(', ') || 'Only the uploader and admins');
+const sharePick = (a, list) => `<div class="pick" style="max-height:230px"><label><input type="checkbox" name="all" ${a.all ? 'checked' : ''}> <b>Everyone in the company</b></label>${list.map(t => `<label><input type="checkbox" name="team" value="${t.id}" ${!a.all && a.teams.includes(t.id) ? 'checked' : ''}> ${esc(t.name)}</label>`).join('')}</div><p class="sm mut">Tick Everyone, or one or more teams.</p>`;
+const readShare = f => { const all = !!f.get('all'); const teams = f.getAll('team'); if(!all && !teams.length) throw new Error('Tick Everyone, or at least one team'); return { all, teams: all ? [] : teams }; };
+const shareList = () => isAdmin() ? S.teams : myTeams();
+const presetAud = () => { const tl = shareList(); return S.view === 'files' && S.fileTeam && S.fileTeam !== 'org' && tl.some(t => t.id === S.fileTeam) ? { all:false, teams:[S.fileTeam] } : { all:true, teams:[] }; };
 function folderTrail(f){ const out = []; let x = f, n = 0; while(x && n++ < 20){ out.unshift(x); x = x.parent_id ? S.folders.find(y => y.id === x.parent_id) : null; } return out; }
 const extMime = n => ({ pdf:'application/pdf', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', heic:'image/heic',
   mp4:'video/mp4', mov:'video/quicktime', webm:'video/webm', mp3:'audio/mpeg', wav:'audio/wav', m4a:'audio/mp4', txt:'text/plain', csv:'text/csv', md:'text/markdown', json:'application/json', log:'text/plain' })[(String(n).split('.').pop() || '').toLowerCase()] || '';
@@ -1401,36 +1409,41 @@ const A = {
         await gapi('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id', { method:'POST', body: fd });
         toast('Uploaded to Google Drive'); render(); }, { ok:'Upload' });
       return; }
-    const tl = isAdmin() ? S.teams : myTeams(); const fol = S.view === 'files' && S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
-    const preset = S.view === 'files' && S.fileTeam && S.fileTeam !== 'org' && tl.some(t => t.id === S.fileTeam) ? S.fileTeam : '';
+    const fol = S.view === 'files' && S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
     modal('Upload files', `<label>Files (up to 100 MB each)</label><input type="file" name="file" required multiple>
-      ${fol ? `<p class="sm mut">These go into the folder “${esc(fol.name)}”, visible to ${fol.team_id ? esc(team(fol.team_id)?.name || 'the team') : 'everyone in the company'}.</p>` : `<label>Who can see them</label><select name="team">${teamOpts(preset, 'Everyone in the company', tl)}</select>`}`, async f => {
+      ${fol ? `<p class="sm mut">These go into the folder “${esc(fol.name)}”, shared with: ${esc(audLabel(folderAud(fol)))}.</p>` : `<label>Who can see them</label>${sharePick(presetAud(), shareList())}`}`, async f => {
       const files = f.getAll('file').filter(x => x && x.size); if(!files.length) throw new Error('Choose at least one file');
       const big = files.find(x => x.size > 104857600); if(big) throw new Error(big.name + ' is larger than 100 MB');
-      const tid = fol ? fol.team_id : (f.get('team') || null);
+      const sh = fol ? { all:false, teams:[] } : readShare(f);
       for(const file of files){
-        const path = `${tid || 'org'}/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
+        const path = `org/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
         const up = await sb.storage.from('files').upload(path, file, { contentType: file.type || undefined }); if(up.error) throw up.error;
-        const { error } = await sb.from('files').insert({ name: file.name, path, size: file.size, mime: file.type || null, team_id: tid, folder_id: fol ? fol.id : null, uploaded_by: S.uid });
+        const { error } = await sb.rpc('add_file', { p_name: file.name, p_path: path, p_size: file.size, p_mime: file.type || null, p_folder: fol ? fol.id : null, p_all: sh.all, p_teams: sh.teams });
         if(error){ await sb.storage.from('files').remove([path]); throw error; }
       }
       toast(files.length > 1 ? files.length + ' files uploaded' : 'Uploaded'); render(); }, { ok:'Upload' }); },
   previewFile: (el, e) => { e.preventDefault(); const f = S.files.find(x => x.id === el.dataset.id); if(f) previewFile(f); },
   openFolder: (el, e) => { e.preventDefault(); S.folderId = el.dataset.id; render(); },
   folderUp: () => { const c = (S.folders || []).find(x => x.id === S.folderId); S.folderId = c ? c.parent_id : null; render(); },
-  newFolder: () => { const tl = isAdmin() ? S.teams : myTeams(); const par = S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
-    const preset = S.fileTeam && S.fileTeam !== 'org' && tl.some(t => t.id === S.fileTeam) ? S.fileTeam : '';
+  newFolder: () => { const par = S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
     modal('New folder', `<label>Folder name</label><input name="name" required maxlength="120" placeholder="e.g. Diwali campaign, Store launch – Pune">
-      ${par ? `<p class="sm mut">Created inside “${esc(par.name)}”, with the same audience.</p>` : `<label>Who can see it</label><select name="team">${teamOpts(preset, 'Everyone in the company', tl)}</select>`}`, async f => {
-      const { data, error } = await sb.from('file_folders').insert({ name: f.get('name').trim(), team_id: par ? par.team_id : (f.get('team') || null), parent_id: par ? par.id : null, created_by: S.uid }).select().single();
-      if(error) throw error; S.folderId = data.id; if(!par) S.fileTeam = ''; toast('Folder created'); render(); }, { ok:'Create folder' }); },
+      ${par ? `<p class="sm mut">Created inside “${esc(par.name)}”, shared with: ${esc(audLabel(folderAud(par)))}.</p>` : `<label>Who can see it</label>${sharePick(presetAud(), shareList())}`}`, async f => {
+      const sh = par ? { all:false, teams:[] } : readShare(f);
+      const { data, error } = await sb.rpc('add_folder', { p_name: f.get('name').trim(), p_parent: par ? par.id : null, p_all: sh.all, p_teams: sh.teams });
+      if(error) throw error; S.folderId = data; if(!par) S.fileTeam = ''; toast('Folder created'); render(); }, { ok:'Create folder' }); },
+  shareFile: el => { const fi = S.files.find(x => x.id === el.dataset.id);
+    modal('Share “' + fi.name + '”', `<label>Who can see it</label>${sharePick(fileAud(fi), shareList())}`, async f => { const sh = readShare(f);
+      const { error } = await sb.rpc('set_file_sharing', { p_file: fi.id, p_all: sh.all, p_teams: sh.teams }); if(error) throw error; toast('Sharing updated'); render(); }, { noFocus:true }); },
+  shareFolder: el => { const fo = S.folders.find(x => x.id === el.dataset.id);
+    modal('Share the folder “' + fo.name + '”', `<label>Who can see it</label>${sharePick(folderAud(fo), shareList())}<p class="sm mut">Everything inside the folder follows this.</p>`, async f => { const sh = readShare(f);
+      const { error } = await sb.rpc('set_folder_sharing', { p_folder: fo.id, p_all: sh.all, p_teams: sh.teams }); if(error) throw error; toast('Sharing updated'); render(); }, { noFocus:true }); },
   renameFolder: el => { const fo = S.folders.find(x => x.id === el.dataset.id);
     modal('Rename folder', `<label>Folder name</label><input name="name" required maxlength="120" value="${esc(fo.name)}">`, async f => { const { error } = await sb.from('file_folders').update({ name: f.get('name').trim() }).eq('id', fo.id); if(error) throw error; render(); }); },
   delFolder: el => { const fo = S.folders.find(x => x.id === el.dataset.id);
-    modal('Delete the folder “' + fo.name + '”?', '<p class="mut">The folder and its sub-folders are removed. The files inside are kept and move back to the main Files list.</p>', async () => { const { error } = await sb.from('file_folders').delete().eq('id', fo.id); if(error) throw error; toast('Folder deleted'); render(); }, { ok:'Delete folder' }); },
-  moveFile: el => { const fi = S.files.find(x => x.id === el.dataset.id); const cands = (S.folders || []).filter(x => (x.team_id || null) === (fi.team_id || null));
-    modal('Move “' + fi.name + '”', cands.length ? `<label>Move to</label><select name="folder">${opts(cands.map(x => ({ id: x.id, name: folderTrail(x).map(y => y.name).join(' › ') })), fi.folder_id, 'Main list (no folder)')}</select>
-      <p class="sm mut">Only folders with the same audience (${fi.team_id ? esc(team(fi.team_id)?.name || 'team') : 'everyone'}) are listed.</p>` : `<p>There are no folders for this file's audience (${fi.team_id ? esc(team(fi.team_id)?.name || 'team') : 'everyone'}) yet. Create one with “+ New folder”.</p>`,
+    modal('Delete the folder “' + fo.name + '”?', '<p class="mut">The folder and its sub-folders are removed. The files inside are kept, move back to the main Files list, and stay shared with the same people.</p>', async () => { const { error } = await sb.from('file_folders').delete().eq('id', fo.id); if(error) throw error; toast('Folder deleted'); render(); }, { ok:'Delete folder' }); },
+  moveFile: el => { const fi = S.files.find(x => x.id === el.dataset.id); const cands = S.folders || [];
+    modal('Move “' + fi.name + '”', cands.length ? `<label>Move to</label><select name="folder">${opts(cands.map(x => ({ id: x.id, name: folderTrail(x).map(y => y.name).join(' › ') + '  ·  ' + audLabel(folderAud(x)) })), fi.folder_id, 'Main list (no folder)')}</select>
+      <p class="sm mut">Inside a folder, the file is shared with whoever the folder is shared with. Moved back to the main list, it keeps that folder's sharing until you change it.</p>` : `<p>There are no folders yet. Create one with “+ Folder”.</p>`,
       cands.length ? async f => { const { error } = await sb.from('files').update({ folder_id: f.get('folder') || null }).eq('id', fi.id); if(error) throw error; toast('Moved'); render(); } : null, { ok:'Move' }); },
   download: async (el, e) => { e.preventDefault(); const f = S.files.find(x => x.id === el.dataset.id); const { data, error } = await sb.storage.from('files').createSignedUrl(f.path, 120, { download: f.name });
     if(fail(error)) return; const a = document.createElement('a'); a.href = data.signedUrl; a.target = '_blank'; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove(); },
