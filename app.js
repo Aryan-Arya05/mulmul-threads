@@ -1,0 +1,1243 @@
+
+// ---------- config ----------
+const SB_URL = 'https://zcnthnhdwdtxalijrcik.supabase.co';
+const SB_KEY = 'sb_publishable_FWivcWTl1QYFEXl5A6akMA_V2hbQcSD';
+const GOOGLE_SIGNIN = true;
+const VAPID_PUBLIC = 'BB6wM1DzOpN2ZUcNcVMCk7nwYKvu9D1Caz0_rYoF-rsPKfhWFQwvSMgC1e9GUD0xZiziRyAd7eyDrVlAQIcsDlk';
+const AUTH_FLOW = (/type=(invite|recovery)/.exec(location.hash) || [])[1] || null; // arrived from an invite or reset link
+const SITE_URL = location.origin + location.pathname;
+const sb = supabase.createClient(SB_URL, SB_KEY);
+
+// ---------- state + helpers ----------
+const S = { uid:null, me:null, org:{}, profiles:{}, teams:[], tm:[], channels:[], view:'home', chan:null, msgs:[], notifs:[],
+  tasks:[], taskFilter:'mine', taskMode:'list', taskTeam:'', weekStart:null, calWho:'', events:[], notes:[], note:null,
+  files:[], fileTeam:'', adminTab:'users', panel:false };
+const $ = (s, r=document) => r.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const P = id => S.profiles[id] || { full_name:'Unknown', email:'' };
+const nm = id => P(id).full_name || P(id).email;
+const ini = id => (nm(id).split(/\s+/).map(w => w[0]).join('').slice(0,2) || '?').toUpperCase();
+const isAdmin = () => S.me && ['founder','admin'].includes(S.me.role);
+const canAI = () => !!S.me && (isAdmin() || !!S.me.ai_access);
+const team = id => S.teams.find(t => t.id === id);
+const myTeams = () => S.teams.filter(t => t.head_id === S.uid || S.tm.some(m => m.team_id === t.id && m.user_id === S.uid));
+const people = () => Object.values(S.profiles).filter(p => p.active).sort((a,b) => a.full_name.localeCompare(b.full_name));
+const d = ts => new Date(ts);
+const fmtTime = ts => d(ts).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+const fmtDay = ts => d(ts).toLocaleDateString([], {weekday:'short', day:'numeric', month:'short'});
+const fmtDT = ts => fmtDay(ts) + ', ' + fmtTime(ts);
+const sameDay = (a,b) => d(a).toDateString() === d(b).toDateString();
+const toInput = ts => { if(!ts) return ''; const x = d(ts); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0,16); };
+const fromInput = v => v ? new Date(v).toISOString() : null;
+const avatar = id => `<div class="av">${esc(ini(id))}</div>`;
+function toast(m){ const t = document.createElement('div'); t.textContent = m; $('#toast').append(t); setTimeout(() => t.remove(), 3500); }
+function fail(error){ if(error){ console.error(error); toast(error.message || 'Something went wrong'); return true; } return false; }
+const opts = (list, sel, blank) => (blank != null ? `<option value="">${esc(blank)}</option>` : '') +
+  list.map(o => `<option value="${esc(o.id)}" ${o.id === sel ? 'selected' : ''}>${esc(o.name)}</option>`).join('');
+const teamOpts = (sel, blank, list) => opts((list || S.teams).map(t => ({id:t.id, name:t.name})), sel, blank);
+const peopleOpts = (sel, blank) => opts(people().map(p => ({id:p.id, name:p.full_name})), sel, blank);
+const pickList = (name, sel=[]) => `<input class="pickq" placeholder="Search people…" autocomplete="off" style="margin-bottom:6px"><div class="pick pickbox">${people().filter(p => p.id !== S.uid).map(p =>
+  `<label data-q="${esc(((p.full_name || '') + ' ' + (p.title || '')).toLowerCase())}"><input type="checkbox" name="${name}" value="${p.id}" ${sel.includes(p.id) ? 'checked' : ''}> ${esc(p.full_name)} <span class="mut sm">${esc(p.title || '')}</span></label>`).join('') || '<div class="mut sm">No other people yet</div>'}</div>`;
+const prioPill = p => `<span class="pill ${p==='urgent'?'bad':p==='high'?'warn':'gray'}">${esc(p)}</span>`;
+const statusLabel = {todo:'To do', in_progress:'In progress', blocked:'Blocked', done:'Done'};
+const statPill = s => `<span class="pill ${s==='done'?'ok':s==='blocked'?'bad':s==='in_progress'?'warn':'gray'}">${statusLabel[s]}</span>`;
+function dueTxt(t){ if(!t.due_at) return ''; const over = t.status !== 'done' && d(t.due_at) < new Date();
+  return `<span class="sm ${over ? '' : 'mut'}" style="${over ? 'color:var(--bad);font-weight:600' : ''}">${over ? 'Overdue · ' : 'Due '}${fmtDT(t.due_at)}</span>`; }
+function rich(body){
+  let h = esc(body).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  people().forEach(p => { if(p.full_name) h = h.split('@' + esc(p.full_name)).join(`<span class="men">@${esc(p.full_name)}</span>`); });
+  return h;
+}
+
+// ---------- appearance ----------
+const THEMES = [['light','Light',['#ffffff','#f5f5f5','#282828']],['dark','Dark',['#1c1c1c','#121212','#f2f2f2']],['eye','Eye care',['#f8efdc','#f1e7d3','#4a3a28']],['auto','Match device',['#ffffff','#282828','#1c1c1c']]];
+function getTheme(){ try { return localStorage.getItem('mt-theme') || 'auto'; } catch(e){ return 'auto'; } }
+function applyTheme(t){
+  const eff = t === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : t;
+  document.documentElement.dataset.theme = eff;
+  const m = document.getElementById('themeColor'); if(m) m.content = eff === 'dark' ? '#0b0b0b' : eff === 'eye' ? '#3b3024' : '#282828';
+}
+function setTheme(t){ try { localStorage.setItem('mt-theme', t); } catch(e){} applyTheme(t); }
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if(getTheme() === 'auto') applyTheme('auto'); });
+applyTheme(getTheme());
+function themeModal(){
+  const cur = getTheme();
+  modal('Appearance', `<p class="mut sm" style="margin:6px 0 0">Eye care uses warm, low-blue colours with softer contrast for long hours or night use.</p>
+    <div class="themes">${THEMES.map(([k,l,c]) => `<button type="button" class="th ${cur === k ? 'on' : ''}" data-act="setTheme" data-t="${k}"><div class="sw">${c.map(x => `<i style="background:${x}"></i>`).join('')}</div><b>${l}</b></button>`).join('')}</div>`, null, { noFocus:true });
+}
+
+// ---------- modal ----------
+let modalSubmit = null;
+function modal(title, body, onSubmit, o={}){
+  closeModal();
+  const ov = document.createElement('div'); ov.className = 'ov'; ov.id = 'ov';
+  ov.innerHTML = `<form class="modal ${o.wide ? 'wide' : ''} ${o.xl ? 'xl' : ''}"><div class="row"><h2 class="grow">${esc(title)}</h2><button type="button" class="btn ghost" data-act="closeModal">✕</button></div>
+    ${body}<div class="err" id="merr"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:8px">${o.extra || ''}${onSubmit ? `<button class="btn pri" id="mok">${esc(o.ok || 'Save')}</button>` : ''}</div></form>`;
+  document.body.append(ov); modalSubmit = onSubmit;
+  ov.addEventListener('mousedown', e => { if(e.target === ov) closeModal(); });
+  $('form', ov).addEventListener('submit', async e => {
+    e.preventDefault(); if(!modalSubmit) return;
+    const btn = $('#mok'); btn.disabled = true;
+    try { const r = await modalSubmit(new FormData(e.target), e.target); if(r !== false) closeModal(); }
+    catch(x){ $('#merr').textContent = x.message || String(x); }
+    if(btn.isConnected) btn.disabled = false;
+  });
+  const f = $('input:not([type=checkbox]),textarea', ov); if(f && !o.noFocus) f.focus();
+}
+function closeModal(){ const o = $('#ov'); if(o) o.remove(); modalSubmit = null; }
+
+// ---------- auth ----------
+const pwProblem = p => p.length < 10 ? 'Use at least 10 characters' : !/[A-Za-z]/.test(p) || !/\d/.test(p) ? 'Use both letters and numbers' : /^(.)\1+$/.test(p) ? 'Choose a less simple password' : '';
+let authMode = 'in';
+function renderAuth(msg=''){
+  $('#app').innerHTML = `<div class="auth"><form class="card" id="authf">
+    <img class="logo" src="logo-white.png" alt="Mulmul Threads">
+    <p class="mut" style="margin:4px 0 14px">${authMode === 'in' ? 'Sign in with your work email.' : 'Create your account with your work email.'}</p>
+    ${authMode === 'up' ? '<label>Full name</label><input name="name" required>' : ''}
+    <label>Work email</label><input name="email" type="email" required autocomplete="email">
+    <label>Password${authMode === 'up' ? ' (at least 10 characters, with letters and numbers)' : ''}</label><input name="password" type="password" required minlength="${authMode === 'in' ? 6 : 10}" autocomplete="${authMode === 'in' ? 'current-password' : 'new-password'}">
+    ${authMode === 'in' ? '<div style="text-align:right;margin-top:6px"><a href="#" class="sm" data-act="forgot">Forgot password?</a></div>' : ''}
+    <div class="err" id="aerr">${esc(msg)}</div>
+    <button class="btn pri" style="width:100%">${authMode === 'in' ? 'Sign in' : 'Create account'}</button>
+    ${GOOGLE_SIGNIN ? '<button type="button" class="btn" style="width:100%;margin-top:8px" data-act="google">Continue with Google</button><p class="sm mut" style="text-align:center;margin:6px 0 0">Google sign-in is for mulmul.co accounts. Everyone else: use the email and password from your invite.</p>' : ''}
+    <p class="sm mut" style="text-align:center;margin-bottom:0">${authMode === 'in' ? 'New here?' : 'Already have an account?'}
+      <a href="#" data-act="authSwitch">${authMode === 'in' ? 'Create account' : 'Sign in'}</a></p></form></div>`;
+  $('#authf').addEventListener('submit', async e => {
+    e.preventDefault(); const f = new FormData(e.target); const email = f.get('email').trim(), password = f.get('password');
+    $('#aerr').textContent = '';
+    if(authMode === 'in'){
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      if(error) $('#aerr').textContent = error.message;
+    } else {
+      const bad = pwProblem(password); if(bad){ $('#aerr').textContent = bad; return; }
+      const { data, error } = await sb.auth.signUp({ email, password, options:{ data:{ full_name: f.get('name').trim() }, emailRedirectTo: location.origin + location.pathname } });
+      if(error) $('#aerr').textContent = error.message;
+      else if(!data.session){ authMode = 'in'; renderAuth('Account created. Check your email to confirm, then sign in.'); }
+    }
+  });
+}
+function renderSetPassword(session){
+  const invite = AUTH_FLOW === 'invite';
+  $('#app').innerHTML = `<div class="auth"><form class="card" id="pwf"><img class="logo" src="logo-white.png" alt="Mulmul Threads">
+    <h2 style="margin:6px 0">${invite ? 'Welcome to Threads' : 'Set a new password'}</h2>
+    <p class="mut" style="margin:0 0 6px">${invite ? 'You have been invited as ' + esc(S.me.email) + '. Set your name and a password to finish.' : 'Choose a new password for ' + esc(S.me.email) + '.'}</p>
+    ${invite ? `<label>Full name</label><input name="name" required value="${esc(S.me.full_name || '')}">` : ''}
+    <label>Password (at least 10 characters, with letters and numbers)</label><input name="p1" type="password" required minlength="10" autocomplete="new-password">
+    <label>Confirm password</label><input name="p2" type="password" required minlength="10" autocomplete="new-password">
+    <div class="err" id="perr"></div><button class="btn pri" style="width:100%">${invite ? 'Finish and open Threads' : 'Save password'}</button></form></div>`;
+  $('#pwf').addEventListener('submit', async e => {
+    e.preventDefault(); const f = new FormData(e.target); const err = $('#perr'); err.textContent = '';
+    if(f.get('p1') !== f.get('p2')){ err.textContent = 'The two passwords do not match'; return; }
+    const bad = pwProblem(f.get('p1')); if(bad){ err.textContent = bad; return; }
+    const { error } = await sb.auth.updateUser({ password: f.get('p1') });
+    if(error){ err.textContent = error.message; return; }
+    if(invite && f.get('name').trim()) await sb.from('profiles').update({ full_name: f.get('name').trim() }).eq('id', S.uid);
+    S.flowDone = true; S.me = null; boot(session);
+  });
+}
+function renderPending(){
+  $('#app').innerHTML = `<div class="auth"><div class="card" style="text-align:center"><img class="logo" src="logo-white.png" alt="Mulmul Threads">
+    <h2 style="margin:14px 0 6px">Waiting for approval</h2>
+    <p class="mut">Your account (${esc(S.me.email)}) has been created. An admin needs to approve it before you can get in.</p>
+    <div class="row" style="justify-content:center"><button class="btn" data-act="reload">Check again</button><button class="btn ghost" data-act="signOut">Sign out</button></div></div></div>`;
+}
+
+let booting = false;
+async function boot(session){
+  if(!session){ S.uid = null; S.me = null; if(rt){ sb.removeChannel(rt); rt = null; } renderAuth(); return; }
+  if(S.uid === session.user.id && S.me) return; // token refresh
+  if(booting) return; booting = true;
+  try {
+    S.uid = session.user.id;
+    const { data: me, error } = await sb.from('profiles').select('*').eq('id', S.uid).maybeSingle();
+    if(error || !me){ $('#app').innerHTML = `<div class="auth"><div class="card">Could not load your profile. <a href="#" data-act="signOut">Sign out</a></div></div>`; return; }
+    S.me = me;
+    if(!me.active){ renderPending(); return; }
+    if(AUTH_FLOW && !S.flowDone){ renderSetPassword(session); return; }
+    if(!me.joined_at) sb.rpc('mark_joined').then(() => {});
+    await loadBase(); renderShell(); subscribe();
+    await Promise.all([loadChannels(), loadNotifs(), syncPush(false)]); checkUpdate();
+    route();
+    if(pendingG){ const rt = pendingG; pendingG = null; finishGConnect(rt); }
+    try { const q = new URLSearchParams(location.search).get('open'); if(q){ history.replaceState(null, '', location.pathname + location.hash); openLink(q); } } catch(e){}
+  } finally { booting = false; }
+}
+async function loadBase(){
+  const [p, t, m, o] = await Promise.all([ sb.from('profiles').select('*'), sb.from('teams').select('*').order('name'),
+    sb.from('team_members').select('*'), sb.from('org_settings').select('*').maybeSingle() ]);
+  S.profiles = Object.fromEntries((p.data || []).map(x => [x.id, x])); S.me = S.profiles[S.uid] || S.me;
+  S.teams = t.data || []; S.tm = m.data || []; S.org = o.data || {};
+}
+
+// ---------- shell ----------
+const APP_VERSION = '2026.11.14-1';
+const ICONS = {
+  home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
+  tasks:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  notes:'<path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h7"/>',
+  files:'<path d="M3 6h6l2 2h10v11H3z"/>',
+  people:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.8a3.5 3.5 0 0 1 0 6.4M17.5 14.5a6.5 6.5 0 0 1 4 5.5"/>',
+  overview:'<path d="M5 20V10M11 20V4M17 20v-7M22 20H2"/>',
+  admin:'<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
+  menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
+  refresh:'<path d="M20 11a8 8 0 1 0-2.3 6.3M20 4v7h-7"/>',
+  out:'<path d="M10 4H5v16h5M14 8l4 4-4 4M18 12H9"/>',
+  collapse:'<path d="M14 7l-5 5 5 5M19 5v14"/>',
+  pin:'<path d="M9 3.5h6l-.8 6.2 3.3 3.1V15H6.5v-2.2l3.3-3.1z"/><path d="M12 15v5.5"/>',
+  search:'<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+  info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+  assistant:'<path d="M11 3l1.9 5.6L18.5 10.5l-5.6 1.9L11 18l-1.9-5.6L3.5 10.5l5.6-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>'
+};
+const ico = k => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
+const NAV = [['home','Home'],['chat','Chat'],['tasks','Tasks'],['calendar','Calendar'],['notes','Notes'],['files','Files'],['people','People']];
+function renderShell(){
+  const nav = NAV.concat(canAI() ? [['assistant','Assistant']] : []).concat(isAdmin() ? [['overview','Overview'],['admin','Admin']] : []);
+  const badge = '<span class="badge chatBadge" hidden></span>';
+  let mini = false; try { mini = localStorage.getItem('mt-side') === 'mini'; } catch(e){}
+  $('#app').innerHTML = `<div class="shell ${mini ? 'mini' : ''}" id="shell"><div class="scrim" data-act="menu"></div>
+    <nav class="side"><div class="brand" data-act="go" data-v="home" role="button" title="Home"><img class="logo" src="logo-white.png" alt="Mulmul Threads"><img class="logo-sm" src="icon-192.png" alt="Mulmul Threads"></div>
+    ${nav.map(([k,l]) => `<button class="nav" data-act="go" data-v="${k}" data-nav="${k}" id="nav-${k}" title="${l}">${ico(k)}<span>${l}</span>${k === 'chat' ? badge : ''}</button>`).join('')}
+    <div class="navsep"></div>
+    <button class="nav" data-act="refresh" title="Refresh app">${ico('refresh')}<span>Refresh app</span></button>
+    <button class="nav" data-act="signOut" title="Sign out">${ico('out')}<span>Sign out</span></button>
+    <div class="me"><b>${esc(S.me.full_name)}</b><br><span style="opacity:.7">${esc(S.me.role)} · v${APP_VERSION}</span></div></nav>
+    <div class="main"><div class="top"><button class="btn ghost" data-act="sideToggle" title="Collapse or expand the sidebar" aria-label="Collapse or expand the sidebar" style="padding:6px 8px;display:flex">${ico('menu')}</button><h2 class="grow" id="vtitle"></h2><div id="vact" class="row"></div>
+      <button class="btn ghost" data-act="theme" title="Appearance" aria-label="Appearance"><svg width="18" height="18" viewBox="0 0 20 20" style="vertical-align:-3px"><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 2a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
+      <button class="btn bell" data-act="togglePanel" title="Notifications">🔔<span class="badge" id="nBadge" hidden></span></button>
+      <button class="btn acct" data-act="account" title="Account and sign out"><span class="av" style="width:26px;height:26px;font-size:11px">${esc(ini(S.uid))}</span><span class="acctn">${esc(S.me.full_name.split(' ')[0])}</span><span class="mut">▾</span></button></div>
+    <div class="view" id="view"></div></div>
+    <nav class="tabbar">${['home','chat','tasks','calendar'].map(k => `<button class="tb" data-act="go" data-v="${k}" data-nav="${k}" title="${k}" aria-label="${k}">${ico(k)}${k === 'chat' ? badge : ''}</button>`).join('')}
+      <button class="tb" data-act="menu" data-nav="more" title="Menu" aria-label="Menu">${ico('menu')}</button></nav></div>`;
+}
+// ---- updates + app-icon badge
+async function checkUpdate(){
+  try { const r = await fetch('version.json?t=' + Date.now(), { cache:'no-store' }); if(!r.ok) return; const j = await r.json();
+    if(j.v && j.v !== APP_VERSION && !$('#upd')){ const b = document.createElement('div'); b.id = 'upd';
+      b.innerHTML = '<span>A new version of Threads is ready.</span><button class="btn pri sm" data-act="refresh">Update now</button>'; document.body.append(b); } } catch(e){}
+}
+async function refreshApp(){
+  toast('Updating…');
+  try { if(canSW){ const reg = await navigator.serviceWorker.getRegistration(); if(reg) await reg.update(); }
+    await fetch(location.pathname, { cache:'reload' }); } catch(e){}
+  location.reload();
+}
+function setBadge(){
+  const n = (S.chatUnread || 0) + S.notifs.filter(x => !x.read_at).length;
+  try { if(navigator.setAppBadge){ if(n) navigator.setAppBadge(n).catch(() => {}); else navigator.clearAppBadge().catch(() => {}); } } catch(e){}
+}
+const VIEWS = {};
+function go(v, arg){ $('#shell')?.classList.remove('menu'); closeDrawer(); S.view = v; try { history.replaceState(null, '', '#' + v); } catch(e){} render(arg); }
+function route(){ const v = location.hash.slice(1); go(VIEWS[v] ? v : 'home'); }
+function render(arg){
+  if(!VIEWS[S.view] || ((S.view === 'admin' || S.view === 'overview') && !isAdmin()) || (S.view === 'assistant' && !canAI())) S.view = 'home';
+  const main4 = ['home','chat','tasks','calendar'].includes(S.view);
+  document.querySelectorAll('[data-nav]').forEach(n => n.classList.toggle('on', n.dataset.nav === S.view || (n.dataset.nav === 'more' && !main4)));
+  const el = $('#view'); el.className = 'view' + (['chat','notes','assistant'].includes(S.view) ? ' flush' : '');
+  $('#vact').innerHTML = ''; el.innerHTML = '<div class="empty">Loading…</div>';
+  VIEWS[S.view](el, arg);
+}
+function head(title, actions=''){ $('#vtitle').textContent = title; $('#vact').innerHTML = actions; }
+
+// ---------- realtime ----------
+let rt = null;
+function subscribe(){
+  if(rt) sb.removeChannel(rt);
+  rt = sb.channel('ws-' + S.uid)
+    .on('postgres_changes', { event:'*', schema:'public', table:'messages' }, p => onMsg(p))
+    .on('postgres_changes', { event:'INSERT', schema:'public', table:'notifications', filter:'user_id=eq.' + S.uid }, p => { S.notifs.unshift(p.new); paintBell(); toast('🔔 ' + p.new.title); })
+    .on('postgres_changes', { event:'*', schema:'public', table:'tasks' }, () => { if(S.view === 'tasks' && !$('#ov')) loadTasks(); })
+    .subscribe();
+}
+function onMsg(p){
+  const m = p.new; if(!m || !m.id) return;
+  if(S.view === 'chat' && S.chan === m.channel_id){
+    const i = S.msgs.findIndex(x => x.id === m.id);
+    if(i >= 0) S.msgs[i] = m; else S.msgs.push(m);
+    paintMsgs(i < 0); if(i < 0 && m.sender_id !== S.uid) sb.rpc('mark_read', { c: m.channel_id });
+  } else if(p.eventType === 'INSERT') loadChannels();
+}
+
+// ---------- notifications ----------
+async function loadNotifs(){ const { data } = await sb.from('notifications').select('*').order('created_at', { ascending:false }).limit(50); S.notifs = data || []; paintBell(); }
+function paintBell(){ const n = S.notifs.filter(x => !x.read_at).length; const b = $('#nBadge'); if(b){ b.hidden = !n; b.textContent = n > 99 ? '99+' : n; } setBadge(); if(S.panel) paintPanel(); }
+function paintPanel(){
+  let el = $('#npanel'); if(!S.panel){ if(el) el.remove(); return; }
+  if(!el){ el = document.createElement('div'); el.id = 'npanel'; el.className = 'npanel'; document.body.append(el); }
+  el.innerHTML = `<div class="row" style="padding:6px 8px"><h3 class="grow">Notifications</h3>${pushState() === 'off' ? '<button class="btn sm" data-act="enablePush">Turn on alerts</button>' : pushState() === 'on' ? '<button class="btn sm ghost" data-act="disablePush">Alerts on ✓</button>' : ''}<button class="btn sm ghost" data-act="readAll">Mark all read</button></div>` +
+    (S.notifs.map(n => `<div class="nt ${n.read_at ? '' : 'un'}" data-act="openNotif" data-id="${n.id}"><b>${esc(n.title)}</b>
+      <div class="sm">${esc(n.body || '')}</div><div class="sm mut">${fmtDT(n.created_at)}</div></div>`).join('') || '<div class="empty">Nothing yet</div>');
+}
+function openLink(link){
+  if(!link) return; const [k, id] = link.split(':');
+  if(k === 'channel'){ S.chan = id; go('chat'); }
+  else if(k === 'task') go('tasks', id);
+  else if(k === 'event') go('calendar');
+  else if(k === 'note'){ S.note = id; go('notes'); }
+  else if(k === 'admin' && isAdmin()){ S.adminTab = 'users'; go('admin'); }
+}
+
+// ---------- phone / desktop alerts ----------
+const canSW = 'serviceWorker' in navigator && location.protocol === 'https:';
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const pushSupported = () => canSW && 'PushManager' in window && 'Notification' in window;
+function pushState(){ // on | off | blocked | ios-install | unsupported
+  if(isIOS && !isStandalone()) return 'ios-install'; // iPhone/iPad only allow alerts from the home-screen app, never from a browser tab
+  if(!pushSupported()) return 'unsupported';
+  if(Notification.permission === 'denied') return 'blocked';
+  return Notification.permission === 'granted' && S.pushOn ? 'on' : 'off';
+}
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+function vapidKey(){ const p = VAPID_PUBLIC.replace(/-/g, '+').replace(/_/g, '/'); const raw = atob(p + '='.repeat((4 - p.length % 4) % 4)); return Uint8Array.from(raw, c => c.charCodeAt(0)); }
+async function syncPush(ask){
+  if(!pushSupported()) return false;
+  try {
+    const reg = await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready;
+    if(ask && Notification.permission === 'default') await Notification.requestPermission();
+    if(Notification.permission !== 'granted') return false;
+    let sub = await reg.pushManager.getSubscription();
+    if(!sub){ if(!ask) return false; sub = await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: vapidKey() }); }
+    const { error } = await sb.rpc('save_push_subscription', { p_endpoint: sub.endpoint, p_p256dh: b64u(sub.getKey('p256dh')), p_auth: b64u(sub.getKey('auth')) });
+    if(error) throw error; S.pushOn = true; return true;
+  } catch(x){ console.error(x); if(ask) toast('Could not turn on alerts: ' + (x.message || x)); return false; }
+}
+async function dropPush(){
+  try { if(!canSW) return; const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && await reg.pushManager.getSubscription();
+    if(sub){ await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint); await sub.unsubscribe(); } } catch(x){ console.error(x); }
+  S.pushOn = false;
+}
+function alertsCard(){
+  const st = pushState();
+  if(st === 'on' || st === 'unsupported') return '';
+  const msg = st === 'ios-install' ? 'Alerts on iPhone only work from the home-screen app, not from this browser tab. Tap the Share button, choose <b>Add to Home Screen</b>, then open Threads from the new icon and turn alerts on there.'
+    : st === 'blocked' ? (isIOS ? 'Alerts are switched off for Threads on this iPhone. Open the iPhone <b>Settings</b> app, go to <b>Notifications</b>, choose <b>Threads</b>, turn on <b>Allow Notifications</b>, then reopen Threads.' : 'Alerts are blocked for this site. Click the padlock or settings icon in the address bar, set Notifications to Allow, then reload.')
+    : 'Get an alert on this device for new messages, task reminders and meeting invites, even when Threads is closed.';
+  return `<div class="card" style="margin-bottom:14px;background:var(--hl-bg);color:var(--hl-ink)"><div class="row wrap"><div class="grow" style="min-width:200px"><b>Turn on alerts</b><div class="sm">${msg}</div></div>
+    ${st === 'off' ? '<button class="btn pri" data-act="enablePush">Turn on alerts</button>' : ''}</div></div>`;
+}
+if(canSW){
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', e => { if(e.data && 'open' in e.data && S.me && S.me.active) openLink(e.data.open); });
+}
+
+// ---------- Google Calendar + Drive ----------
+let pendingG = null;
+const G = { token:null, exp:0 };
+const GSCOPES = 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive';
+const gOn = () => !!(S.me && S.me.google_connected);
+// Google sign-in and Calendar/Drive are limited by Google to the company's own Workspace accounts
+const gDomain = () => (S.org.allowed_domain || 'mulmul.co').toLowerCase();
+const gAllowed = () => !!S.me && (S.me.email || '').toLowerCase().endsWith('@' + gDomain());
+async function gfn(body){
+  const { data, error } = await sb.functions.invoke('google', { body });
+  if(error){ let m = error.message; try { const j = await error.context.json(); if(j && j.error) m = j.error; } catch(x){} throw new Error(m); }
+  if(data && data.error) throw new Error(data.error); return data;
+}
+async function gtoken(){
+  if(G.token && Date.now() < G.exp) return G.token;
+  const dd = await gfn({ action:'token' });
+  if(!dd.connected){ S.me.google_connected = false; throw new Error('Google is not connected. Connect it from the Account menu.'); }
+  G.token = dd.access_token; G.exp = Date.now() + ((dd.expires_in || 3000) - 120) * 1000; return G.token;
+}
+async function gapi(url, o={}){
+  const t = await gtoken();
+  const headers = { Authorization: 'Bearer ' + t, ...(typeof o.body === 'string' ? { 'Content-Type':'application/json' } : {}), ...(o.headers || {}) };
+  const r = await fetch(url.startsWith('http') ? url : 'https://www.googleapis.com' + url, { ...o, headers });
+  if(r.status === 204) return null;
+  const j = await r.json().catch(() => ({}));
+  if(!r.ok){ const e = new Error((j.error && j.error.message) || ('Google error ' + r.status)); e.status = r.status; throw e; }
+  return j;
+}
+function gConnect(){
+  sb.auth.signInWithOAuth({ provider:'google', options:{ redirectTo: SITE_URL, scopes: GSCOPES, queryParams:{ access_type:'offline', prompt:'consent', login_hint: S.me.email } } });
+}
+async function finishGConnect(rt){
+  try { const dd = await gfn({ action:'connect', refresh_token: rt });
+    G.token = dd.access_token; G.exp = Date.now() + ((dd.expires_in || 3000) - 120) * 1000;
+    S.me.google_connected = true; toast('Google Calendar and Drive connected'); render();
+  } catch(x){ modal('Google could not be connected', `<p>${esc(x.message || String(x))}</p>`, null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="gConnect">Try again</button>' }); }
+}
+function googleCard(what){
+  if(gOn() || !gAllowed()) return '';
+  return `<div class="card" style="margin-bottom:14px"><div class="row wrap"><div class="grow" style="min-width:200px"><b>Connect Google ${what || 'Calendar and Drive'}</b>
+    <div class="sm mut">See your Google Calendar here, add Meet links to meetings, and work with Drive files, using your ${esc(S.me.email)} account.</div></div>
+    <button class="btn pri" data-act="gConnect">Connect Google</button></div></div>`;
+}
+async function gCalEvents(from, to){
+  const j = await gapi(`/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(from.toISOString())}&timeMax=${encodeURIComponent(to.toISOString())}&singleEvents=true&orderBy=startTime&maxResults=250`);
+  return (j.items || []).filter(x => x.status !== 'cancelled' && x.start).map(x => ({ id:'g:' + x.id, gid:x.id, kind:'google', title:x.summary || '(No title)',
+    starts_at: x.start.dateTime || (x.start.date + 'T00:00:00'), ends_at: x.end.dateTime || (x.end.date + 'T00:00:00'), allDay: !!x.start.date,
+    location:x.location || '', meet:x.hangoutLink || '', html:x.htmlLink || '', description:x.description || '', organizer:(x.organizer && x.organizer.email) || '',
+    guests:(x.attendees || []).map(a => a.email), event_attendees:[], created_by:null }));
+}
+const driveId = v => { v = (v || '').trim(); if(!v) return null; const m = /folders\/([\w-]{10,})/.exec(v) || /[?&]id=([\w-]{10,})/.exec(v) || /^([\w-]{10,})$/.exec(v); return m ? m[1] : null; };
+const fmtSize = b => !b ? '' : b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+let dpTimer = null;
+function drivePick(cb){
+  if(!gOn()){ if(!gAllowed()){ modal('Google Drive is not available', `<p>Attaching from Google Drive inside Threads works only for ${esc(gDomain())} Google accounts. You can still attach files from your device, or paste a Drive link into your message.</p>`, null, { noFocus:true }); return; }
+    modal('Connect Google first', '<p>Attaching Drive files needs your Google account connected.</p>', null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="gConnect">Connect Google</button>' }); return; }
+  S.driveCb = cb; $('#dov')?.remove();
+  const ov = document.createElement('div'); ov.className = 'ov'; ov.id = 'dov';
+  ov.innerHTML = `<div class="modal"><div class="row"><h2 class="grow">Attach from Google Drive</h2><button type="button" class="btn ghost" data-act="driveClose">✕</button></div>
+    <input id="dq" placeholder="Search your Drive by file name…" style="margin-top:10px"><div id="dres" style="margin-top:8px;min-height:120px"><div class="empty">Loading recent files…</div></div>
+    <p class="sm mut">This shares a link. People need access to the file in Google Drive to open it.</p></div>`;
+  document.body.append(ov); ov.addEventListener('mousedown', e => { if(e.target === ov) ov.remove(); });
+  const run = async () => { const term = $('#dq').value.trim().replace(/['\\]/g, ' ');
+    try { const j = await gapi(`/drive/v3/files?q=${encodeURIComponent((term ? `name contains '${term}' and ` : '') + 'trashed=false')}${term ? '' : '&orderBy=viewedByMeTime%20desc'}&pageSize=25&fields=files(id,name,mimeType,webViewLink,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+      if(!$('#dres')) return;
+      $('#dres').innerHTML = (j.files || []).map(f => `<div class="item" data-act="drivePicked" data-url="${esc(f.webViewLink || '')}" data-name="${esc(f.name)}"><div class="grow"><div>${f.mimeType === 'application/vnd.google-apps.folder' ? '📁 ' : ''}${esc(f.name)}</div><div class="sm mut">${f.modifiedTime ? 'Modified ' + fmtDay(f.modifiedTime) : ''}</div></div></div>`).join('') || '<div class="empty">No files found</div>';
+    } catch(x){ if($('#dres')) $('#dres').innerHTML = `<div class="empty">${esc(x.message)}</div>`; } };
+  $('#dq').addEventListener('input', () => { clearTimeout(dpTimer); dpTimer = setTimeout(run, 350); }); $('#dq').focus(); run();
+}
+const fileScope = () => { const sc = S.fileTeam; const root = sc === 'org' ? S.org.drive_folder_id : sc ? (team(sc) || {}).drive_folder_id : null; return { root, label: sc === 'org' ? 'Company-wide' : sc ? (team(sc) || {}).name : '' }; };
+
+// ---------- home ----------
+VIEWS.home = async el => {
+  head('Home');
+  const now = new Date(), start = new Date(now); start.setHours(0,0,0,0); const end = new Date(start); end.setDate(end.getDate() + 1);
+  const ann = S.channels.filter(c => c.kind === 'announcement').map(c => c.id);
+  const [tk, ev, an] = await Promise.all([
+    sb.from('tasks').select('*').eq('assignee_id', S.uid).neq('status', 'done').order('due_at', { nullsFirst:false }).limit(8),
+    sb.from('events').select('*, event_attendees(user_id,response)').lt('starts_at', end.toISOString()).gt('ends_at', start.toISOString()).order('starts_at'),
+    ann.length ? sb.from('messages').select('*').in('channel_id', ann).is('deleted_at', null).order('created_at', { ascending:false }).limit(4) : { data: [] } ]);
+  const mine = (ev.data || []).filter(e => e.created_by === S.uid || e.event_attendees.some(a => a.user_id === S.uid));
+  const unread = S.channels.filter(c => c.unread > 0);
+  const hr = now.getHours();
+  el.innerHTML = `<h1 style="margin-bottom:16px">Namaste ${esc(S.me.full_name.split(' ')[0])}</h1>
+  ${alertsCard()}${googleCard()}<div class="grid g2">
+    <div class="card"><div class="row"><h3 class="grow">My open tasks</h3><button class="btn sm" data-act="newTask">+ Task</button></div>
+      ${(tk.data || []).map(t => `<div class="item" data-act="openTask" data-id="${t.id}"><div class="grow"><div>${esc(t.title)}</div>${dueTxt(t)}</div>${prioPill(t.priority)}</div>`).join('') || '<div class="empty">Nothing pending. Nice.</div>'}</div>
+    <div class="card"><div class="row"><h3 class="grow">Today</h3><button class="btn sm" data-act="newEvent">+ Meeting</button></div>
+      ${mine.map(e => `<div class="item" data-act="go" data-v="calendar"><div class="grow"><div>${esc(e.title)}</div><span class="sm mut">${fmtTime(e.starts_at)} – ${fmtTime(e.ends_at)}${e.location ? ' · ' + esc(e.location) : ''}</span></div><span class="pill gray">${e.kind === 'block' ? 'Blocked' : 'Meeting'}</span></div>`).join('') || '<div class="empty">No meetings today</div>'}</div>
+    <div class="card"><h3>Unread conversations</h3>
+      ${unread.map(c => `<div class="item" data-act="openChan" data-id="${c.id}"><div class="grow">${esc(chanName(c))}</div><span class="badge">${c.unread > 99 ? '99+' : c.unread}</span></div>`).join('') || '<div class="empty">All caught up</div>'}</div>
+    <div class="card"><h3>Latest announcements</h3>
+      ${(an.data || []).map(m => `<div class="item" data-act="openChan" data-id="${m.channel_id}"><div class="grow"><div style="white-space:pre-wrap">${esc(m.body.slice(0, 160))}</div><span class="sm mut">${esc(nm(m.sender_id))} · ${fmtDT(m.created_at)}</span></div></div>`).join('') || '<div class="empty">No announcements yet</div>'}</div>
+  </div>`;
+};
+
+// ---------- chat ----------
+const chanName = c => c.kind === 'dm' ? nm(c.dm_user) : (c.kind === 'announcement' ? '📣 ' : c.is_private ? '🔒 ' : '# ') + (c.name || '');
+async function loadChannels(){
+  const { data, error } = await sb.rpc('my_channels'); if(fail(error)) return;
+  S.channels = data || [];
+  const n = S.channels.reduce((a, c) => a + (c.id === S.chan && S.view === 'chat' ? 0 : c.unread), 0);
+  S.chatUnread = n; document.querySelectorAll('.chatBadge').forEach(b => { b.hidden = !n; b.textContent = n > 99 ? '99+' : n; }); setBadge();
+  if(S.view === 'chat') paintChanList();
+}
+function paintChanList(){
+  const el = $('#clist'); if(!el) return;
+  const row = c => `<div class="ch ${c.id === S.chan ? 'on' : ''} ${c.unread && c.id !== S.chan ? 'unread' : ''}" data-act="openChan" data-id="${c.id}"><span class="grow" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(chanName(c))}</span>${c.unread && c.id !== S.chan ? `<span class="badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}<button type="button" class="pinb ${c.pinned ? 'on' : ''}" data-act="togglePin" data-id="${c.id}" title="${c.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${c.pinned ? 'Unpin' : 'Pin to top'}">${ico('pin')}</button></div>`;
+  const tname = c => c.team_id && c.kind !== 'dm' ? { ...c, name: (team(c.team_id)?.name || '') + ' · ' + c.name } : c;
+  const pinned = S.channels.filter(c => c.pinned).sort((a,b) => chanName(a).localeCompare(chanName(b)));
+  const by = f => S.channels.filter(c => !c.pinned && f(c)).sort((a,b) => (a.name || '').localeCompare(b.name || ''));
+  const dms = S.channels.filter(c => c.kind === 'dm' && !c.pinned).sort((a,b) => (b.last_at || '').localeCompare(a.last_at || ''));
+  const teamCh = by(c => c.kind !== 'dm' && c.team_id);
+  const q = (S.chatQ || '').trim().toLowerCase();
+  let body;
+  if(q){
+    const ppl = people().filter(p => p.id !== S.uid && ((p.full_name || '').toLowerCase().includes(q) || (p.title || '').toLowerCase().includes(q) || (p.email || '').toLowerCase().includes(q)));
+    const chans = S.channels.filter(c => c.kind !== 'dm' && (((c.name || '') + ' ' + (team(c.team_id)?.name || '')).toLowerCase().includes(q)));
+    body = `<h4>People</h4>${ppl.map(p => `<div class="ch" data-act="dm" data-id="${p.id}">${avatar(p.id)}<span class="grow" style="min-width:0"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.full_name)}</span><span class="sm mut" style="font-weight:400">${esc(p.title || p.email)}</span></span></div>`).join('') || '<div class="mut sm" style="padding:4px 9px">No one matches</div>'}
+      <h4>Channels and groups</h4>${chans.map(c => row(c.team_id ? { ...c, name: (team(c.team_id)?.name || '') + ' · ' + c.name } : c)).join('') || '<div class="mut sm" style="padding:4px 9px">Nothing matches</div>'}
+      <h4>Messages</h4><div class="ch" data-act="searchMsgsQ">🔎 <span class="grow">Search messages for “${esc(S.chatQ.trim())}”</span></div>`;
+  } else {
+    body = `${pinned.length ? '<h4>Pinned</h4>' + pinned.map(c => row(tname(c))).join('') : ''}
+    <h4>Announcements</h4>${by(c => c.kind === 'announcement' && !c.team_id).map(row).join('')}
+    <h4>Channels <button class="btn sm ghost" data-act="newChannel">+</button></h4>${by(c => c.kind === 'channel' && !c.team_id && !c.is_private).map(row).join('')}
+    <h4>Groups <button class="btn sm ghost" data-act="newGroup">+</button></h4>${by(c => c.kind === 'channel' && !c.team_id && c.is_private).map(row).join('') || '<div class="mut sm" style="padding:4px 9px">Pick people and start a group with +</div>'}
+    ${teamCh.length ? '<h4>Team spaces</h4>' + teamCh.map(c => row({ ...c, name: (team(c.team_id)?.name || '') + ' · ' + c.name })).join('') : ''}
+    <h4>Direct messages <button class="btn sm ghost" data-act="newDM">+</button></h4>${dms.map(row).join('') || '<div class="mut sm" style="padding:4px 9px">Start one with +</div>'}`;
+  }
+  let inp = $('#msearch');
+  if(!inp){
+    el.innerHTML = `<input type="search" placeholder="Search people, groups, messages…" id="msearch" autocomplete="off"><div id="cres"></div>`;
+    inp = $('#msearch'); inp.value = S.chatQ || '';
+    inp.addEventListener('input', () => { S.chatQ = inp.value; paintChanList(); });
+    inp.addEventListener('keydown', e => { if(e.key === 'Enter' && inp.value.trim()){ const first = $('#cres [data-act=dm], #cres [data-act=openChan]'); if(first) first.click(); else searchMsgs(inp.value.trim()); } else if(e.key === 'Escape'){ inp.value = ''; S.chatQ = ''; paintChanList(); } });
+  }
+  $('#cres').innerHTML = body;
+}
+VIEWS.chat = async el => {
+  head('Chat');
+  el.innerHTML = `<div class="chat ${S.chan ? 'open' : ''}" id="chat"><div class="clist" id="clist"></div><div class="pane" id="pane"><div class="empty" style="margin:auto">Pick a conversation</div></div></div>`;
+  await loadChannels();
+  if(!S.chan && innerWidth > 820){ const g = S.channels.find(c => c.name === 'general') || S.channels[0]; if(g) S.chan = g.id; }
+  if(S.chan) openChan(S.chan);
+};
+async function openChan(id){
+  S.chan = id; S.pending = []; closeDrawer(); if(S.view !== 'chat'){ go('chat'); return; }
+  const c = S.channels.find(x => x.id === id);
+  if(!c){ S.chan = null; $('#chat')?.classList.remove('open'); paintChanList(); return; }
+  $('#chat').classList.add('open'); c.unread = 0; paintChanList();
+  const canPost = c.kind !== 'announcement' || isAdmin() || (c.team_id && team(c.team_id)?.head_id === S.uid);
+  $('#pane').innerHTML = `<div class="phead"><button class="btn sm back" data-act="chatBack">←</button><h3 class="grow ptitle" data-act="chanInfo" title="Details, media, links and docs">${esc(chanName(c))}</h3>
+      <button class="btn sm ghost ${c.pinned ? 'on' : ''}" id="pinbtn" data-act="togglePin" title="Pin or unpin this conversation" aria-label="Pin or unpin this conversation" style="display:flex">${ico('pin')}</button>
+      <button class="btn sm ghost" data-act="chanSearch" title="Search in this conversation" aria-label="Search in this conversation" style="display:flex">${ico('search')}</button>
+      <button class="btn sm ghost" data-act="chanInfo" title="Details, media, links and docs" aria-label="Details, media, links and docs" style="display:flex">${ico('info')}</button>
+      ${c.kind === 'announcement' && canPost ? '<button class="btn sm" data-act="readers">Read by</button>' : ''}
+      ${c.kind !== 'dm' && c.is_private ? '<button class="btn sm" data-act="members">Members</button>' : ''}</div>
+    <div class="msgs" id="msgs"></div>
+    ${canPost ? `<form class="comp" id="comp"><div class="mlist" id="mlist" hidden></div><div class="pend" id="pend"></div><button type="button" class="btn" data-act="attachChat" title="Attach a photo or file" aria-label="Attach a photo or file">📎</button><textarea class="grow" style="width:auto" rows="1" id="mbox" placeholder="Message ${esc(chanName(c))} — type @ to mention"></textarea><button class="btn pri">Send</button></form>`
+      : '<div class="comp mut sm">Only admins and team heads can post announcements.</div>'}`;
+  const { data, error } = await sb.from('messages').select('*').eq('channel_id', id).order('created_at', { ascending:false }).limit(100);
+  if(fail(error) || S.chan !== id) return;
+  S.msgs = (data || []).reverse(); S.more = (data || []).length === 100; paintMsgs(true);
+  sb.rpc('mark_read', { c: id }).then(() => loadChannels());
+  const box = $('#mbox'); if(!box) return;
+  if(innerWidth > 820) box.focus();
+  box.addEventListener('input', () => { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 140) + 'px'; mentionMenu(box); });
+  box.addEventListener('paste', e => { const fl = [...(e.clipboardData?.files || [])]; if(fl.length){ e.preventDefault(); addPending(fl); } });
+  box.addEventListener('keydown', e => { if(e.key === 'Enter' && !e.shiftKey && innerWidth > 820){ e.preventDefault(); $('#comp').requestSubmit(); } });
+  $('#comp').addEventListener('submit', async e => {
+    e.preventDefault(); let body = box.value.trim(); const files = (S.pending || []).slice(); if(!body && !files.length) return;
+    if(S.sending) return; S.sending = true; const attachments = [];
+    try {
+      if(files.length) toast('Uploading ' + files.length + (files.length > 1 ? ' files…' : ' file…'));
+      for(const file of files){
+        const path = `chat/${id}/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
+        const up = await sb.storage.from('files').upload(path, file, { contentType: file.type || undefined });
+        if(up.error) throw up.error;
+        attachments.push({ name: file.name, path, size: file.size, mime: file.type || '' });
+      }
+    } catch(x){ S.sending = false; if(attachments.length) sb.storage.from('files').remove(attachments.map(a => a.path)); toast('Upload failed: ' + (x.message || x)); return; }
+    if(!body) body = '📎 ' + files.map(f => f.name).join(', ');
+    S.pending = []; paintPend();
+    const low = body.toLowerCase();
+    const mentions = people().filter(p => p.id !== S.uid && p.full_name && low.includes('@' + p.full_name.toLowerCase())).map(p => p.id);
+    box.value = ''; box.style.height = 'auto'; $('#mlist').hidden = true;
+    const { data: m, error } = await sb.from('messages').insert({ channel_id: id, sender_id: S.uid, body, mentions, attachments }).select().single();
+    S.sending = false;
+    if(fail(error)){ box.value = body; if(attachments.length) sb.storage.from('files').remove(attachments.map(a => a.path)); return; }
+    if(!S.msgs.some(x => x.id === m.id)){ S.msgs.push(m); paintMsgs(true); }
+  });
+}
+const isImg = a => /^image\/(png|jpe?g|gif|webp|avif|heic|heif)$/i.test(a.mime || '') ;
+function attHtml(m){
+  const list = Array.isArray(m.attachments) ? m.attachments : []; if(!list.length) return '';
+  return '<div>' + list.map(a => isImg(a)
+    ? `<img class="att" alt="${esc(a.name)}" data-att="${esc(a.path)}" data-act="openAtt" data-path="${esc(a.path)}" data-name="${esc(a.name)}" data-img="1">`
+    : `<a href="#" class="attf" data-act="openAtt" data-path="${esc(a.path)}" data-name="${esc(a.name)}"><span>📄</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span><span class="sm mut">${fmtSize(a.size)}</span></a>`).join('') + '</div>';
+}
+async function hydrateAtts(scroll){
+  S.attUrls = S.attUrls || {};
+  const imgs = [...document.querySelectorAll('img[data-att]')]; if(!imgs.length) return;
+  const need = [...new Set(imgs.map(i => i.dataset.att).filter(p => !S.attUrls[p]))];
+  if(need.length){ const { data } = await sb.storage.from('files').createSignedUrls(need, 3600); (data || []).forEach(r => { if(r.signedUrl) S.attUrls[r.path] = r.signedUrl; }); }
+  const box = $('#msgs');
+  document.querySelectorAll('img[data-att]').forEach(i => { const u = S.attUrls[i.dataset.att]; if(u && i.src !== u){ if(scroll && box) i.addEventListener('load', () => { box.scrollTop = box.scrollHeight; }, { once:true }); i.src = u; } });
+}
+function paintPend(){
+  const el = $('#pend'); if(!el) return;
+  el.innerHTML = (S.pending || []).map((f, i) => `<span class="chip"><span>${isImg({ mime: f.type }) ? '🖼' : '📄'} ${esc(f.name)}</span><span class="mut">${fmtSize(f.size)}</span><button type="button" data-act="rmPend" data-i="${i}" aria-label="Remove">✕</button></span>`).join('');
+}
+function addPending(fileList){
+  S.pending = S.pending || [];
+  for(const f of fileList){
+    if(S.pending.length >= 5){ toast('Up to 5 files per message'); break; }
+    if(f.size > 104857600){ toast(f.name + ' is larger than 100 MB'); continue; }
+    if(!f.size) continue; S.pending.push(f);
+  }
+  paintPend(); $('#mbox')?.focus();
+}
+function mentionMenu(box){
+  const ml = $('#mlist'); const m = box.value.slice(0, box.selectionStart).match(/@([\w ]{0,30})$/);
+  if(!m){ ml.hidden = true; return; }
+  const q = m[1].toLowerCase(); const hits = people().filter(p => p.id !== S.uid && p.full_name.toLowerCase().startsWith(q)).slice(0, 6);
+  if(!hits.length){ ml.hidden = true; return; }
+  ml.hidden = false; ml.innerHTML = hits.map(p => `<div data-act="pickMention" data-n="${esc(p.full_name)}" data-len="${m[1].length}">${esc(p.full_name)}</div>`).join('');
+}
+function paintMsgs(scroll){
+  const el = $('#msgs'); if(!el) return; let last = null;
+  el.innerHTML = (S.more ? '<div style="text-align:center"><button class="btn sm" data-act="earlier">Load earlier messages</button></div>' : '') +
+    (S.msgs.map(m => {
+      const sep = !last || !sameDay(last, m.created_at) ? `<div class="daysep">${fmtDay(m.created_at)}</div>` : ''; last = m.created_at;
+      const own = m.sender_id === S.uid;
+      return sep + `<div class="msg" data-id="${m.id}">${avatar(m.sender_id)}<div class="grow"><div><b>${esc(nm(m.sender_id))}</b> <span class="sm mut">${fmtTime(m.created_at)}${m.edited_at && !m.deleted_at ? ' · edited' : ''}</span></div>
+        ${m.deleted_at ? '<div class="del">Message deleted</div>' : `<div class="mb">${rich(m.body)}</div>${attHtml(m)}
+        <div class="ma"><button class="btn sm ghost" data-act="msgTask" data-id="${m.id}" title="Turn into a task">✓ Task</button>${own ? `<button class="btn sm ghost" data-act="msgEdit" data-id="${m.id}">Edit</button><button class="btn sm ghost danger" data-act="msgDel" data-id="${m.id}">Delete</button>` : ''}</div>`}</div></div>`;
+    }).join('') || '<div class="empty">No messages yet. Say hello.</div>');
+  if(scroll) el.scrollTop = el.scrollHeight;
+  hydrateAtts(scroll);
+}
+// ---------- conversation drawer: search + details/media/links/docs ----------
+function closeDrawer(){ const dr = document.getElementById('drawer'); if(dr) dr.remove(); document.body.classList.remove('drawer-open'); }
+function openDrawer(title, bodyHtml){
+  closeDrawer(); const dr = document.createElement('div'); dr.className = 'drawer'; dr.id = 'drawer';
+  dr.innerHTML = `<div class="dh"><button class="btn ghost" data-act="closeDrawer" aria-label="Close">✕</button><h3 class="grow">${esc(title)}</h3></div><div class="db" id="dbody">${bodyHtml}</div>`;
+  document.body.append(dr); document.body.classList.add('drawer-open'); return dr;
+}
+let csTimer = null;
+function chanSearch(){
+  const c = S.channels.find(x => x.id === S.chan); if(!c) return;
+  openDrawer('Search in ' + chanName(c), `<input type="search" id="csq" placeholder="Search messages…" autocomplete="off"><div id="csres" style="margin-top:8px"><div class="empty">Type to search this conversation</div></div>`);
+  const inp = $('#csq'); inp.focus();
+  const run = async () => { const q = inp.value.trim(); const out = $('#csres'); if(!out) return;
+    if(q.length < 2){ out.innerHTML = '<div class="empty">Type at least 2 letters</div>'; return; }
+    const pat = '%' + q.replace(/[%_\\]/g, m => '\\' + m) + '%';
+    const { data, error } = await sb.from('messages').select('id, sender_id, body, created_at').eq('channel_id', c.id).ilike('body', pat).is('deleted_at', null).order('created_at', { ascending:false }).limit(60);
+    if(!$('#csres') || inp.value.trim() !== q) return;
+    if(error){ out.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+    const hi = t => { const i = t.toLowerCase().indexOf(q.toLowerCase()); if(i < 0) return esc(t.slice(0, 160)); const a = Math.max(0, i - 50);
+      return (a ? '…' : '') + esc(t.slice(a, i)) + '<mark>' + esc(t.slice(i, i + q.length)) + '</mark>' + esc(t.slice(i + q.length, i + q.length + 90)); };
+    out.innerHTML = (data || []).map(m => `<div class="sres" data-act="jumpMsg" data-id="${m.id}" data-at="${esc(m.created_at)}"><div class="sm mut">${esc(nm(m.sender_id))} · ${fmtDT(m.created_at)}</div><div style="word-break:break-word">${hi(m.body)}</div></div>`).join('') || '<div class="empty">No messages found</div>';
+  };
+  inp.addEventListener('input', () => { clearTimeout(csTimer); csTimer = setTimeout(run, 300); });
+}
+async function jumpMsg(id, at){
+  if(innerWidth <= 820) closeDrawer();
+  if(!S.msgs.some(x => x.id === id)){
+    const { data, error } = await sb.from('messages').select('*').eq('channel_id', S.chan).gte('created_at', at).order('created_at').limit(200);
+    if(fail(error)) return; S.msgs = data || []; S.more = true; paintMsgs(false);
+  }
+  const el = document.querySelector('.msg[data-id="' + id + '"]');
+  if(el){ el.scrollIntoView({ block:'center' }); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+}
+async function chanInfo(tab){
+  const c = S.channels.find(x => x.id === S.chan); if(!c) return; S.infoTab = tab || S.infoTab || 'media';
+  let top;
+  if(c.kind === 'dm'){ const pp = P(c.dm_user); const tms = S.teams.filter(t => t.head_id === pp.id || S.tm.some(m => m.team_id === t.id && m.user_id === pp.id)).map(t => t.name);
+    top = `<div style="text-align:center"><div class="av" style="width:72px;height:72px;font-size:24px;margin:0 auto 8px">${esc(ini(c.dm_user))}</div><h2>${esc(pp.full_name)}</h2>
+      <div class="mut">${esc(pp.title || '')}</div><div class="sm mut">${esc(pp.email || '')}</div>${tms.length ? `<div class="sm" style="margin-top:6px">${tms.map(t => `<span class="pill gray">${esc(t)}</span>`).join(' ')}</div>` : ''}</div>`;
+  } else {
+    let who = c.team_id ? 'Everyone in ' + esc(team(c.team_id)?.name || 'the team') : 'Everyone in the company';
+    if(c.is_private){ const { data } = await sb.from('channel_members').select('user_id').eq('channel_id', c.id); who = (data || []).map(x => esc(nm(x.user_id))).join(', ') || 'No members'; }
+    top = `<div style="text-align:center"><h2>${esc(chanName(c))}</h2><div class="mut sm">${c.kind === 'announcement' ? 'Announcements' : c.is_private ? 'Group' : 'Channel'}</div></div>
+      <label>${c.is_private ? 'Members' : 'Who can see it'}</label><div class="sm">${who}</div>`;
+  }
+  const tabs = [['media','Media'],['docs','Docs'],['links','Links']];
+  openDrawer(c.kind === 'dm' ? 'Contact info' : 'Details', `${top}
+    <div class="tabs" style="margin:18px 0 10px">${tabs.map(([k,l]) => `<span class="tab ${S.infoTab === k ? 'on' : ''}" data-act="infoTab" data-t="${k}">${l}</span>`).join('')}</div>
+    <div id="infobody"><div class="empty">Loading…</div></div>`);
+  const out = () => document.getElementById('infobody'); let html = '';
+  if(S.infoTab === 'links'){
+    const { data } = await sb.from('messages').select('id, sender_id, body, created_at').eq('channel_id', c.id).ilike('body', '%http%').is('deleted_at', null).order('created_at', { ascending:false }).limit(200);
+    const rows = []; (data || []).forEach(m => (m.body.match(/https?:\/\/[^\s<]+/g) || []).forEach(u => rows.push({ u, m })));
+    html = rows.map(r => `<div class="sres" style="cursor:default"><a href="${esc(r.u)}" target="_blank" rel="noopener" style="word-break:break-all">${esc(r.u.length > 90 ? r.u.slice(0, 90) + '…' : r.u)}</a>
+      <div class="sm mut">${esc(nm(r.m.sender_id))} · ${fmtDT(r.m.created_at)} · <a href="#" data-act="jumpMsg" data-id="${r.m.id}" data-at="${esc(r.m.created_at)}">Show in chat</a></div></div>`).join('') || '<div class="empty">No links shared yet</div>';
+  } else {
+    const { data } = await sb.from('messages').select('id, sender_id, attachments, created_at').eq('channel_id', c.id).is('deleted_at', null).neq('attachments', '[]').order('created_at', { ascending:false }).limit(300);
+    const all = []; (data || []).forEach(m => (Array.isArray(m.attachments) ? m.attachments : []).forEach(a => all.push({ a, m })));
+    if(S.infoTab === 'media'){ const im = all.filter(x => isImg(x.a));
+      html = im.length ? `<div class="mgrid">${im.map(x => `<img alt="${esc(x.a.name)}" data-att="${esc(x.a.path)}" data-act="openAtt" data-path="${esc(x.a.path)}" data-name="${esc(x.a.name)}" data-img="1" title="${esc(nm(x.m.sender_id))} · ${fmtDay(x.m.created_at)}">`).join('')}</div>` : '<div class="empty">No photos shared yet</div>';
+    } else { const dc = all.filter(x => !isImg(x.a));
+      html = dc.map(x => `<div class="sres" data-act="openAtt" data-path="${esc(x.a.path)}" data-name="${esc(x.a.name)}"><div>📄 ${esc(x.a.name)}</div><div class="sm mut">${fmtSize(x.a.size)} · ${esc(nm(x.m.sender_id))} · ${fmtDay(x.m.created_at)}</div></div>`).join('') || '<div class="empty">No documents shared yet</div>';
+    }
+  }
+  if(out()){ out().innerHTML = html; hydrateAtts(false); }
+}
+
+async function searchMsgs(q){
+  const pat = '%' + q.replace(/[%_\\]/g, m => '\\' + m) + '%';
+  const { data, error } = await sb.from('messages').select('*').ilike('body', pat).is('deleted_at', null).order('created_at', { ascending:false }).limit(50);
+  if(fail(error)) return;
+  modal('Search: ' + q, (data || []).map(m => { const c = S.channels.find(x => x.id === m.channel_id);
+    return `<div class="item" data-act="openChanModal" data-id="${m.channel_id}"><div class="grow"><div class="sm mut">${esc(c ? chanName(c) : '')} · ${esc(nm(m.sender_id))} · ${fmtDT(m.created_at)}</div><div style="white-space:pre-wrap">${esc(m.body.slice(0, 240))}</div></div></div>`; }).join('') || '<div class="empty">No messages found</div>', null, { wide:true });
+}
+
+// ---------- tasks ----------
+async function loadTasks(){
+  const { data, error } = await sb.from('tasks').select('*').order('due_at', { nullsFirst:false }).order('created_at', { ascending:false }).limit(1000);
+  if(fail(error)) return; S.tasks = data || []; if(S.view === 'tasks') paintTasks();
+}
+VIEWS.tasks = async (el, openId) => {
+  head('Tasks', '<button class="btn pri" data-act="newTask">+ New task</button>');
+  el.innerHTML = `<div class="row wrap" style="margin-bottom:14px"><div class="tabs grow" id="tfil"></div>
+    <select id="tteam" style="width:auto" data-chg="taskTeam">${teamOpts(S.taskTeam, 'All teams')}</select>
+    <div class="tabs"><span class="tab" data-act="taskMode" data-m="list" id="tm-list">List</span><span class="tab" data-act="taskMode" data-m="board" id="tm-board">Board</span></div></div><div id="tbody"></div>`;
+  await loadTasks(); if(openId) taskModal(openId);
+};
+function paintTasks(){
+  const fl = [['mine','Assigned to me'],['byme','Assigned by me'],['team','My teams'],['all', isAdmin() ? 'Everything' : 'All I can see'],['done','Completed']];
+  $('#tfil').innerHTML = fl.map(([k,l]) => `<span class="tab ${S.taskFilter === k ? 'on' : ''}" data-act="taskFilter" data-f="${k}">${l}</span>`).join('');
+  ['list','board'].forEach(m => $('#tm-' + m).classList.toggle('on', S.taskMode === m));
+  const mt = myTeams().map(t => t.id);
+  let list = S.tasks.filter(t => S.taskFilter === 'done' ? t.status === 'done' : S.taskMode === 'board' || t.status !== 'done');
+  if(S.taskFilter === 'mine') list = list.filter(t => t.assignee_id === S.uid);
+  if(S.taskFilter === 'byme') list = list.filter(t => t.created_by === S.uid && t.assignee_id !== S.uid);
+  if(S.taskFilter === 'team') list = list.filter(t => mt.includes(t.team_id));
+  if(S.taskTeam) list = list.filter(t => t.team_id === S.taskTeam);
+  const meta = t => `<span class="sm mut">${t.assignee_id ? esc(nm(t.assignee_id)) : 'Unassigned'}${t.team_id ? ' · ' + esc(team(t.team_id)?.name || '') : ''}</span>`;
+  const body = $('#tbody');
+  if(S.taskMode === 'board' && S.taskFilter !== 'done'){
+    body.innerHTML = `<div class="board">${Object.keys(statusLabel).map(s => `<div class="col"><h4>${statusLabel[s]} · ${list.filter(t => t.status === s).length}</h4>
+      ${list.filter(t => t.status === s).slice(0, 60).map(t => `<div class="tk" data-act="openTask" data-id="${t.id}"><div style="font-weight:500">${esc(t.title)}</div><div>${meta(t)}</div><div class="row" style="margin-top:6px">${prioPill(t.priority)}<span class="grow"></span>${dueTxt(t)}</div></div>`).join('')}</div>`).join('')}</div>`;
+  } else {
+    body.innerHTML = `<div class="card">${list.map(t => `<div class="item" data-act="openTask" data-id="${t.id}">
+      <input type="checkbox" ${t.status === 'done' ? 'checked' : ''} data-act="toggleDone" data-id="${t.id}" title="Mark done">
+      <div class="grow"><div style="${t.status === 'done' ? 'text-decoration:line-through;color:var(--mut)' : 'font-weight:500'}">${esc(t.title)}</div>${meta(t)} ${dueTxt(t)}</div>
+      ${statPill(t.status)} ${prioPill(t.priority)}</div>`).join('') || '<div class="empty">No tasks here</div>'}</div>`;
+  }
+}
+async function taskModal(id, preset={}){
+  let t = id ? S.tasks.find(x => x.id === id) : null;
+  if(id && !t){ const r = await sb.from('tasks').select('*').eq('id', id).maybeSingle(); t = r.data; if(!t){ toast('Task not found or no access'); return; } }
+  const v = t || { status:'todo', priority:'medium', assignee_id:S.uid, ...preset };
+  let ups = []; if(t){ const r = await sb.from('task_updates').select('*').eq('task_id', t.id).order('created_at'); ups = r.data || []; }
+  const canDel = t && (t.created_by === S.uid || isAdmin());
+  modal(t ? 'Task' : 'New task', `
+    <label>Title</label><input name="title" required maxlength="300" value="${esc(v.title || '')}">
+    <label class="row">Details<span class="grow"></span><a href="#" data-act="attachTask" style="font-weight:500">📎 Attach from Drive</a></label><textarea name="description" rows="3">${esc(v.description || '')}</textarea>
+    <div class="row wrap"><div class="grow"><label>Assign to</label><select name="assignee_id">${peopleOpts(v.assignee_id, 'Unassigned')}</select></div>
+      <div class="grow"><label>Team</label><select name="team_id">${teamOpts(v.team_id, 'No team')}</select></div></div>
+    <div class="row wrap"><div class="grow"><label>Status</label><select name="status">${opts(Object.entries(statusLabel).map(([id,name]) => ({id,name})), v.status)}</select></div>
+      <div class="grow"><label>Priority</label><select name="priority">${opts(['low','medium','high','urgent'].map(x => ({id:x,name:x})), v.priority)}</select></div></div>
+    <div class="row wrap"><div class="grow"><label>Due</label><input type="datetime-local" name="due_at" value="${toInput(v.due_at)}"></div>
+      <div class="grow"><label>Remind at</label><input type="datetime-local" name="remind_at" value="${toInput(v.remind_at)}"></div></div>
+    ${t ? `<div class="sm mut" style="margin-top:10px">Created by ${esc(nm(t.created_by))} on ${fmtDT(t.created_at)}${t.completed_at ? ' · completed ' + fmtDT(t.completed_at) : ''}</div>
+      <div class="thread"><h3>Updates</h3><div id="ups">${ups.map(u => `<div class="u"><b>${esc(nm(u.user_id))}</b> <span class="sm mut">${fmtDT(u.created_at)}</span><div style="white-space:pre-wrap">${esc(u.body)}</div></div>`).join('') || '<div class="mut sm">No updates yet</div>'}</div>
+      <div class="row" style="margin-top:8px"><input id="upbox" placeholder="Add an update…"><button type="button" class="btn" data-act="addUpdate" data-id="${t.id}">Post</button></div></div>` : ''}`,
+    async f => {
+      const row = { title: f.get('title').trim(), description: f.get('description').trim() || null, assignee_id: f.get('assignee_id') || null, team_id: f.get('team_id') || null,
+        status: f.get('status'), priority: f.get('priority'), due_at: fromInput(f.get('due_at')), remind_at: fromInput(f.get('remind_at')) };
+      const { error } = t ? await sb.from('tasks').update(row).eq('id', t.id) : await sb.from('tasks').insert({ ...row, created_by: S.uid, source_message_id: preset.source_message_id || null });
+      if(error) throw error; toast(t ? 'Task updated' : 'Task created');
+      if(S.view === 'tasks') loadTasks(); else if(S.view === 'home') render();
+    }, { wide:true, noFocus: !!t, extra: canDel ? `<button type="button" class="btn danger" data-act="delTask" data-id="${t.id}">Delete</button>` : '' });
+}
+
+// ---------- calendar ----------
+function monday(x){ const m = new Date(x); m.setHours(0,0,0,0); m.setDate(m.getDate() - ((m.getDay() + 6) % 7)); return m; }
+VIEWS.calendar = async el => {
+  if(!S.weekStart) S.weekStart = monday(new Date());
+  head('Calendar', '<button class="btn" data-act="newBlock">Block time</button><button class="btn pri" data-act="newEvent">+ Meeting</button>');
+  const ws = S.weekStart, we = new Date(ws); we.setDate(we.getDate() + 7);
+  const { data, error } = await sb.from('events').select('*, event_attendees(user_id,response)').lt('starts_at', we.toISOString()).gt('ends_at', ws.toISOString()).order('starts_at');
+  if(fail(error)) return; S.events = data || [];
+  const who = S.calWho; let gerr = ''; S.gevents = [];
+  if(gOn() && (!who || who === S.uid)){
+    try { const known = new Set(S.events.map(e => e.google_event_id).filter(Boolean)); S.gevents = (await gCalEvents(ws, we)).filter(g => !known.has(g.gid)); } catch(x){ gerr = x.message; }
+  }
+  if(S.view !== 'calendar') return;
+  const list = S.events.filter(e => !who || e.created_by === who || e.event_attendees.some(a => a.user_id === who)).concat(S.gevents).sort((a,b) => d(a.starts_at) - d(b.starts_at));
+  const last = new Date(we); last.setDate(last.getDate() - 1);
+  let days = '';
+  for(let i = 0; i < 7; i++){
+    const day = new Date(ws); day.setDate(day.getDate() + i); const nx = new Date(day); nx.setDate(nx.getDate() + 1);
+    const evs = list.filter(e => d(e.starts_at) < nx && d(e.ends_at) > day);
+    days += `<div class="day ${sameDay(day, new Date()) ? 'today' : ''}"><div class="dl">${fmtDay(day)}</div><div>${evs.map(e => {
+      if(e.kind === 'google') return `<div class="ev google" data-act="openGEvent" data-id="${esc(e.id)}"><div class="row"><b class="grow">${esc(e.title)}</b><span class="pill gray">Google</span></div>
+        <div class="sm mut">${e.allDay ? 'All day' : fmtTime(e.starts_at) + ' – ' + fmtTime(e.ends_at)}${e.guests.length ? ' · ' + e.guests.length + ' guests' : ''}${e.meet ? ' · Meet' : ''}</div></div>`;
+      const mine = e.event_attendees.find(a => a.user_id === S.uid);
+      return `<div class="ev ${e.kind}" data-act="openEvent" data-id="${e.id}"><div class="row"><b class="grow">${esc(e.title)}</b>${e.is_private ? '<span class="pill gray">Private</span>' : ''}${mine ? `<span class="pill ${mine.response === 'yes' ? 'ok' : mine.response === 'no' ? 'bad' : 'warn'}">${mine.response === 'pending' ? 'Reply needed' : mine.response}</span>` : ''}</div>
+        <div class="sm mut">${fmtTime(e.starts_at)} – ${fmtTime(e.ends_at)} · ${esc(nm(e.created_by))}${e.kind === 'meeting' ? ' · ' + (e.event_attendees.length + 1) + ' people' : ' · blocked'}</div></div>`; }).join('') || '<span class="mut sm">—</span>'}</div></div>`;
+  }
+  el.innerHTML = `${googleCard('Calendar')}${gerr ? `<div class="card sm" style="margin-bottom:10px;color:var(--bad)">Google Calendar could not be loaded: ${esc(gerr)}</div>` : ''}<div class="row wrap" style="margin-bottom:10px"><button class="btn sm" data-act="week" data-d="-1">←</button><button class="btn sm" data-act="week" data-d="0">This week</button><button class="btn sm" data-act="week" data-d="1">→</button>
+    <b class="grow wk">${fmtDay(ws)} – ${fmtDay(last)}</b>
+    <select style="width:auto" data-chg="calWho">${opts([{id:S.uid, name:'My calendar'}].concat(people().filter(p => p.id !== S.uid).map(p => ({id:p.id, name:p.full_name}))), who, 'Everyone')}</select></div>
+    <div class="card">${days}</div>`;
+};
+function eventModal(kind){
+  const st = new Date(); st.setMinutes(0,0,0); st.setHours(st.getHours() + 1); const en = new Date(st); en.setHours(en.getHours() + (kind === 'block' ? 2 : 1));
+  let warned = false;
+  modal(kind === 'block' ? 'Block time' : 'New meeting', `
+    <label>Title</label><input name="title" required maxlength="300" placeholder="${kind === 'block' ? 'e.g. Focus time, Store visit' : 'e.g. Weekly launch review'}">
+    <div class="row wrap"><div class="grow"><label>Starts</label><input type="datetime-local" name="starts_at" required value="${toInput(st)}"></div>
+      <div class="grow"><label>Ends</label><input type="datetime-local" name="ends_at" required value="${toInput(en)}"></div></div>
+    ${kind === 'meeting' ? `<label>Location or meeting link</label><input name="location" placeholder="Conference room / Google Meet link">
+      <label>Agenda</label><textarea name="description" rows="2"></textarea>
+      <label>Invite people</label>${pickList('att')}
+      <label>Or invite a whole team</label><select name="team_id">${teamOpts('', 'No team')}</select>` : ''}
+    <label style="display:flex;gap:8px;align-items:center;font-weight:400;color:var(--ink)"><input type="checkbox" name="is_private"> Private (only invitees and founders can see it)</label>
+    ${gOn() ? `<p class="sm mut">${kind === 'meeting' ? 'This also goes into Google Calendar: attendees get a Google invite, and a Meet link is added if you leave the location empty.' : 'This also blocks the time in your Google Calendar.'}</p>` : ''}`,
+    async f => {
+      const s = fromInput(f.get('starts_at')), e = fromInput(f.get('ends_at'));
+      if(d(e) <= d(s)) throw new Error('End time must be after the start time');
+      const tid = f.get('team_id') || null;
+      let att = new Set(f.getAll('att'));
+      if(tid){ S.tm.filter(m => m.team_id === tid).forEach(m => att.add(m.user_id)); const h = team(tid)?.head_id; if(h) att.add(h); }
+      att.delete(S.uid); att = [...att];
+      if(!warned){
+        const { data: ov } = await sb.from('events').select('title, created_by, starts_at, ends_at, event_attendees(user_id,response)').lt('starts_at', e).gt('ends_at', s);
+        const busy = new Set(); const all = [S.uid, ...att];
+        (ov || []).forEach(x => all.forEach(u => { if(x.created_by === u || x.event_attendees.some(a => a.user_id === u && a.response !== 'no')) busy.add(u); }));
+        if(gOn()){ try { const fb = await gapi('/calendar/v3/freeBusy', { method:'POST', body: JSON.stringify({ timeMin: s, timeMax: e, items: all.map(u => ({ id: P(u).email })) }) });
+          all.forEach(u => { const c = fb.calendars && fb.calendars[P(u).email]; if(c && c.busy && c.busy.length) busy.add(u); }); } catch(x){ console.warn('free/busy check failed', x); } }
+        if(busy.size){ warned = true; $('#mok').textContent = 'Schedule anyway';
+          throw new Error('Clash: ' + [...busy].map(u => u === S.uid ? 'You' : nm(u)).join(', ') + ' already ' + (busy.size > 1 ? 'have' : (busy.has(S.uid) ? 'have' : 'has')) + ' something at this time. Change the time, or press “Schedule anyway”.'); }
+      }
+      const { data: ev, error } = await sb.from('events').insert({ title: f.get('title').trim(), kind, starts_at: s, ends_at: e, location: (f.get('location') || '').trim() || null,
+        description: (f.get('description') || '').trim() || null, team_id: tid, is_private: !!f.get('is_private'), created_by: S.uid }).select().single();
+      if(error) throw error;
+      if(att.length){ const r = await sb.from('event_attendees').insert(att.map(u => ({ event_id: ev.id, user_id: u }))); if(r.error) throw r.error; }
+      let gnote = '';
+      if(gOn()){ try {
+          const gb = { summary: ev.title, description: ev.description || undefined, location: ev.location || undefined, start:{ dateTime: s }, end:{ dateTime: e },
+            attendees: att.map(u => ({ email: P(u).email })), visibility: ev.is_private ? 'private' : 'default' };
+          if(kind === 'meeting' && !ev.location) gb.conferenceData = { createRequest:{ requestId: ev.id, conferenceSolutionKey:{ type:'hangoutsMeet' } } };
+          const g = await gapi('/calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all', { method:'POST', body: JSON.stringify(gb) });
+          await sb.from('events').update({ google_event_id: g.id, meet_link: g.hangoutLink || null }).eq('id', ev.id); gnote = ' and added to Google Calendar';
+        } catch(x){ gnote = ', but Google Calendar failed: ' + x.message; } }
+      toast((kind === 'block' ? 'Time blocked' : 'Meeting scheduled') + gnote); S.weekStart = monday(s); if(S.view === 'calendar' || S.view === 'home') render();
+    }, { ok: kind === 'block' ? 'Block' : 'Schedule', wide:true });
+}
+function openEvent(id){
+  const e = S.events.find(x => x.id === id); if(!e) return;
+  const mine = e.event_attendees.find(a => a.user_id === S.uid); const own = e.created_by === S.uid || isAdmin();
+  const link = e.location && /^https?:\/\//.test(e.location) ? `<a href="${esc(e.location)}" target="_blank" rel="noopener">${esc(e.location)}</a>` : esc(e.location || '');
+  modal(e.title, `<p><b>${fmtDT(e.starts_at)} – ${sameDay(e.starts_at, e.ends_at) ? fmtTime(e.ends_at) : fmtDT(e.ends_at)}</b><br>
+    <span class="mut">${e.kind === 'block' ? 'Blocked by' : 'Organised by'} ${esc(nm(e.created_by))}${e.team_id ? ' · ' + esc(team(e.team_id)?.name || '') : ''}</span></p>
+    ${e.meet_link ? `<p><a class="btn pri" href="${esc(e.meet_link)}" target="_blank" rel="noopener" style="text-decoration:none">Join with Google Meet</a></p>` : ''}${link ? `<p>${link}</p>` : ''}${e.description ? `<p style="white-space:pre-wrap">${esc(e.description)}</p>` : ''}
+    ${e.event_attendees.length ? `<label>Invited</label>${e.event_attendees.map(a => `<div class="row" style="padding:3px 0"><span class="grow">${esc(nm(a.user_id))}</span><span class="pill ${a.response === 'yes' ? 'ok' : a.response === 'no' ? 'bad' : 'gray'}">${a.response}</span></div>`).join('')}` : ''}
+    ${mine ? `<label>Your reply</label><div class="row">${['yes','maybe','no'].map(r => `<button type="button" class="btn ${mine.response === r ? 'pri' : ''}" data-act="rsvp" data-id="${e.id}" data-r="${r}">${r[0].toUpperCase() + r.slice(1)}</button>`).join('')}</div>` : ''}`,
+    null, { extra: `${e.kind === 'meeting' ? `<button type="button" class="btn" data-act="eventNotes" data-id="${e.id}">Meeting notes</button>` : ''}${own ? `<button type="button" class="btn danger" data-act="delEvent" data-id="${e.id}">Delete</button>` : ''}` });
+}
+
+// ---------- notes ----------
+let noteTimer = null;
+VIEWS.notes = async el => {
+  head('Notes', '<button class="btn pri" data-act="newNote">+ New note</button>');
+  el.innerHTML = `<div class="notes ${S.note ? 'open' : ''}" id="notes"><div class="nlist" id="nlist"></div><div class="ned" id="ned"><div class="empty" style="margin:auto">Pick a note or create one</div></div></div>`;
+  const { data, error } = await sb.from('notes').select('*').order('updated_at', { ascending:false }).limit(500);
+  if(fail(error)) return; S.notes = data || []; paintNoteList(); if(S.note) openNote(S.note);
+};
+function paintNoteList(){
+  const el = $('#nlist'); if(!el) return;
+  const sec = (title, list) => list.length ? `<h4 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:14px 8px 4px">${title}</h4>` + list.map(n =>
+    `<div class="ch ${n.id === S.note ? 'on' : ''}" data-act="openNote" data-id="${n.id}"><div class="grow" style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n.title || 'Untitled')}</div><div class="sm mut">${n.owner_id === S.uid ? '' : esc(nm(n.owner_id)) + ' · '}${fmtDay(n.updated_at)}</div></div></div>`).join('') : '';
+  el.innerHTML = (sec('My private notes', S.notes.filter(n => n.visibility === 'private')) + sec('Team notes', S.notes.filter(n => n.visibility === 'team')) + sec('Company-wide', S.notes.filter(n => n.visibility === 'org'))) || '<div class="empty">No notes yet</div>';
+}
+function openNote(id){
+  const n = S.notes.find(x => x.id === id); if(!n){ S.note = null; return; }
+  S.note = id; $('#notes').classList.add('open'); paintNoteList();
+  const own = n.owner_id === S.uid; const can = own || (n.visibility === 'team' && myTeams().some(t => t.id === n.team_id));
+  const tl = isAdmin() ? S.teams : myTeams();
+  $('#ned').innerHTML = `<div class="row wrap"><button class="btn sm back" data-act="noteBack">←</button>
+      ${own ? `<select id="nvis" style="width:auto">${opts([{id:'private',name:'Private to me'},{id:'team',name:'Shared with a team'},{id:'org',name:'Whole company'}], n.visibility)}</select>
+      <select id="nteam" style="width:auto" ${n.visibility === 'team' ? '' : 'hidden'}>${teamOpts(n.team_id, 'Choose team', tl)}</select>` : `<span class="pill gray">${n.visibility === 'team' ? esc(team(n.team_id)?.name || 'Team') : 'Company-wide'} · by ${esc(nm(n.owner_id))}</span>`}
+      <span class="grow"></span><span class="sm mut" id="nsaved"></span>${can ? '<button class="btn sm" data-act="attachNote">📎 Drive</button>' : ''}${own || isAdmin() ? `<button class="btn sm danger" data-act="delNote" data-id="${n.id}">Delete</button>` : ''}</div>
+    <input class="ttl" id="nttl" value="${esc(n.title)}" placeholder="Untitled" ${can ? '' : 'readonly'}>
+    <textarea id="nbody" placeholder="Write here…" ${can ? '' : 'readonly'}>${esc(n.body)}</textarea>`;
+  if(!can) return;
+  const save = async patch => { $('#nsaved').textContent = 'Saving…'; const { error } = await sb.from('notes').update(patch).eq('id', id);
+    if(fail(error)){ $('#nsaved').textContent = 'Not saved'; return; } Object.assign(n, patch, { updated_at: new Date().toISOString() }); if($('#nsaved')) $('#nsaved').textContent = 'Saved'; paintNoteList(); };
+  const later = () => { clearTimeout(noteTimer); const t = $('#nttl').value, b = $('#nbody').value; noteTimer = setTimeout(() => save({ title: t || 'Untitled', body: b }), 700); };
+  $('#nttl').addEventListener('input', later); $('#nbody').addEventListener('input', later);
+  if(own){
+    const vis = $('#nvis'), tm = $('#nteam');
+    const upd = () => { tm.hidden = vis.value !== 'team'; if(vis.value === 'team' && !tm.value) return; save({ visibility: vis.value, team_id: vis.value === 'team' ? tm.value : null }); };
+    vis.addEventListener('change', upd); tm.addEventListener('change', upd);
+  }
+}
+async function newNote(preset={}){
+  const { data, error } = await sb.from('notes').insert({ owner_id: S.uid, title: 'Untitled', ...preset }).select().single();
+  if(fail(error)) return; S.note = data.id; closeModal(); go('notes');
+}
+
+// ---------- files ----------
+VIEWS.files = async el => {
+  head('Files', '<button class="btn pri" data-act="upload">Upload</button>');
+  const scopeSel = `<select style="width:auto" data-chg="fileTeam">${opts([{id:'org',name:'Company-wide'}].concat(S.teams.map(t => ({id:t.id,name:t.name}))), S.fileTeam, 'All files I can access')}</select>`;
+  const fsc = fileScope();
+  if(fsc.root){
+    S.drivePath = S.drivePath || []; const cur = S.drivePath.length ? S.drivePath[S.drivePath.length - 1].id : fsc.root;
+    const bar = `<div class="row wrap" style="margin-bottom:12px">${scopeSel}${S.drivePath.length ? '<button class="btn sm" data-act="driveUp">← Back</button>' : ''}
+      <b class="grow">${esc(fsc.label)}${S.drivePath.map(x => ' › ' + esc(x.name)).join('')}</b><a class="btn sm" href="https://drive.google.com/drive/folders/${esc(cur)}" target="_blank" rel="noopener" style="text-decoration:none">Open in Google Drive</a></div>`;
+    if(!gOn()){ el.innerHTML = bar + `<div class="card"><p>This space keeps its files in Google Drive.</p>${gAllowed() ? '' : `<p class="mut sm">Showing them here needs a ${esc(gDomain())} Google account. Use “Open in Google Drive” above with any Google account the folder has been shared with.</p>`}</div>` + googleCard('Drive'); return; }
+    let rows = '';
+    try { const j = await gapi(`/drive/v3/files?q=${encodeURIComponent(`'${cur}' in parents and trashed=false`)}&fields=files(id,name,mimeType,size,modifiedTime,webViewLink,owners(displayName))&orderBy=folder,name&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+      if(S.view !== 'files') return;
+      rows = (j.files || []).map(f => `<tr><td>${f.mimeType === 'application/vnd.google-apps.folder' ? `<a href="#" data-act="driveOpen" data-id="${esc(f.id)}" data-name="${esc(f.name)}">📁 ${esc(f.name)}</a>` : `<a href="${esc(f.webViewLink || '#')}" target="_blank" rel="noopener">${esc(f.name)}</a>`}</td>
+        <td>${esc((f.owners && f.owners[0] && f.owners[0].displayName) || '')}</td><td>${f.modifiedTime ? fmtDay(f.modifiedTime) : ''}</td><td>${fmtSize(+f.size)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">This folder is empty</td></tr>';
+    } catch(x){ rows = `<tr><td colspan="4" class="empty">${x.status === 404 || x.status === 403 ? 'You do not have access to this folder in Google Drive. Ask the team head or an admin to share it with ' + esc(S.me.email) + '.' : esc(x.message)}</td></tr>`; }
+    el.innerHTML = bar + `<div class="card tw"><table><tr><th>Name</th><th>Owner</th><th>Modified</th><th>Size</th></tr>${rows}</table></div>`;
+    return;
+  }
+  const [fr, dr] = await Promise.all([sb.from('files').select('*, file_teams(team_id)').order('created_at', { ascending:false }).limit(1000), sb.from('file_folders').select('*, folder_teams(team_id)').order('name')]);
+  if(fail(fr.error) || fail(dr.error)) return; if(S.view !== 'files') return;
+  S.files = fr.data || []; S.folders = dr.data || [];
+  let curF = S.folderId ? S.folders.find(x => x.id === S.folderId) : null; if(!curF) S.folderId = null;
+  head('Files', '<button class="btn" data-act="newFolder">+ Folder</button><button class="btn pri" data-act="upload">Upload</button>');
+  const inScope = a => !S.fileTeam || (S.fileTeam === 'org' ? a.all : a.teams.includes(S.fileTeam));
+  const folders = S.folders.filter(f => curF ? f.parent_id === curF.id : (!f.parent_id && inScope(folderAud(f))));
+  const list = S.files.filter(f => curF ? f.folder_id === curF.id : (!f.folder_id && inScope(fileAud(f))));
+  const count = id => S.files.filter(f => f.folder_id === id).length + S.folders.filter(f => f.parent_id === id).length;
+  const mine = x => x === S.uid || isAdmin();
+  const bar = curF ? `<button class="btn sm" data-act="folderUp">← Back</button><b class="grow">${folderTrail(curF).map(f => esc(f.name)).join(' › ')} <span class="pill gray">${esc(audLabel(folderAud(curF)))}</span></b>` : scopeSel;
+  el.innerHTML = `<div class="row wrap" style="margin-bottom:12px">${bar}</div>
+    <div class="card tw"><table><tr><th>Name</th><th>Shared with</th><th>Added by</th><th>Size</th><th></th></tr>
+    ${folders.map(f => `<tr><td><a href="#" data-act="openFolder" data-id="${f.id}"><b>📁 ${esc(f.name)}</b></a></td><td>${esc(audLabel(folderAud(f)))}</td><td>${esc(nm(f.created_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${count(f.id)} item${count(f.id) === 1 ? '' : 's'}</td>
+      <td>${mine(f.created_by) ? `<div class="row">${f.parent_id ? '' : `<button class="btn sm" data-act="shareFolder" data-id="${f.id}">Share</button>`}<button class="btn sm" data-act="renameFolder" data-id="${f.id}">Rename</button><button class="btn sm danger" data-act="delFolder" data-id="${f.id}">Delete</button></div>` : ''}</td></tr>`).join('')}
+    ${list.map(f => `<tr><td><a href="#" data-act="previewFile" data-id="${f.id}">${esc(f.name)}</a></td><td>${esc(audLabel(fileAud(f)))}</td><td>${esc(nm(f.uploaded_by))}<div class="sm mut">${fmtDay(f.created_at)}</div></td><td>${fmtSize(f.size)}</td>
+      <td>${mine(f.uploaded_by) ? `<div class="row">${f.folder_id ? '' : `<button class="btn sm" data-act="shareFile" data-id="${f.id}">Share</button>`}<button class="btn sm" data-act="moveFile" data-id="${f.id}">Move</button><button class="btn sm danger" data-act="delFile" data-id="${f.id}">Delete</button></div>` : ''}</td></tr>`).join('')}
+    ${folders.length || list.length ? '' : `<tr><td colspan="5" class="empty">${curF ? 'This folder is empty. Use Upload to add files.' : 'No files yet'}</td></tr>`}</table></div>`;
+};
+// who a file or folder is shared with: everyone, or a set of teams; things inside a folder follow its top folder
+const folderAud = fo => { const r = (fo && folderTrail(fo)[0]) || fo || {}; return { all: !!r.shared_all, teams: (r.folder_teams || []).map(x => x.team_id) }; };
+const fileAud = f => f.folder_id ? folderAud((S.folders || []).find(x => x.id === f.folder_id)) : { all: !!f.shared_all, teams: (f.file_teams || []).map(x => x.team_id) };
+const audLabel = a => a.all ? 'Everyone' : (a.teams.map(t => team(t)?.name).filter(Boolean).join(', ') || 'Only the uploader and admins');
+const sharePick = (a, list) => `<div class="pick" style="max-height:230px"><label><input type="checkbox" name="all" ${a.all ? 'checked' : ''}> <b>Everyone in the company</b></label>${list.map(t => `<label><input type="checkbox" name="team" value="${t.id}" ${!a.all && a.teams.includes(t.id) ? 'checked' : ''}> ${esc(t.name)}</label>`).join('')}</div><p class="sm mut">Tick Everyone, or one or more teams.</p>`;
+const readShare = f => { const all = !!f.get('all'); const teams = f.getAll('team'); if(!all && !teams.length) throw new Error('Tick Everyone, or at least one team'); return { all, teams: all ? [] : teams }; };
+const shareList = () => isAdmin() ? S.teams : myTeams();
+const presetAud = () => { const tl = shareList(); return S.view === 'files' && S.fileTeam && S.fileTeam !== 'org' && tl.some(t => t.id === S.fileTeam) ? { all:false, teams:[S.fileTeam] } : { all:true, teams:[] }; };
+function folderTrail(f){ const out = []; let x = f, n = 0; while(x && n++ < 20){ out.unshift(x); x = x.parent_id ? S.folders.find(y => y.id === x.parent_id) : null; } return out; }
+const extMime = n => ({ pdf:'application/pdf', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', heic:'image/heic',
+  mp4:'video/mp4', mov:'video/quicktime', webm:'video/webm', mp3:'audio/mpeg', wav:'audio/wav', m4a:'audio/mp4', txt:'text/plain', csv:'text/csv', md:'text/markdown', json:'application/json', log:'text/plain' })[(String(n).split('.').pop() || '').toLowerCase()] || '';
+async function previewFile(f){
+  const mime = f.mime || extMime(f.name);
+  const [v, dl] = await Promise.all([sb.storage.from('files').createSignedUrl(f.path, 900), sb.storage.from('files').createSignedUrl(f.path, 900, { download: f.name })]);
+  if(fail(v.error)) return; const url = v.data.signedUrl; const dlUrl = (dl.data && dl.data.signedUrl) || url;
+  const box = 'max-width:100%;max-height:72vh;display:block;margin:0 auto;border-radius:6px';
+  let body;
+  if(/^image\//.test(mime)) body = `<img src="${esc(url)}" alt="${esc(f.name)}" style="${box}">`;
+  else if(mime === 'application/pdf') body = `<iframe src="${esc(url)}" title="${esc(f.name)}" style="width:100%;height:72vh;border:1px solid var(--line);border-radius:6px;background:#fff"></iframe>`;
+  else if(/^video\//.test(mime)) body = `<video src="${esc(url)}" controls playsinline style="${box}"></video>`;
+  else if(/^audio\//.test(mime)) body = `<audio src="${esc(url)}" controls style="width:100%"></audio>`;
+  else if((/^text\//.test(mime) || mime === 'application/json') && (f.size || 0) <= 1048576){
+    let t = ''; try { t = await (await fetch(url)).text(); } catch(x){ t = 'Could not load a preview.'; }
+    body = `<pre style="white-space:pre-wrap;word-break:break-word;max-height:72vh;overflow:auto;background:var(--soft2);padding:12px;border-radius:6px;margin:0;font-size:13px">${esc(t.slice(0, 200000))}</pre>`;
+  } else body = `<div class="empty">There is no built-in preview for this type of file (${esc((f.name.split('.').pop() || 'file').toUpperCase())}). Download it to open.</div>`;
+  modal(f.name, `<div style="margin-top:12px">${body}</div>`, null, { xl:true, noFocus:true,
+    extra: `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener" style="text-decoration:none">Open in new tab</a><a class="btn pri" href="${esc(dlUrl)}" target="_blank" rel="noopener" style="text-decoration:none">Download</a>` });
+}
+
+// ---------- people ----------
+VIEWS.people = el => {
+  head('People & teams');
+  el.innerHTML = `<div class="grid g2"><div class="card"><h3>Directory</h3>${people().map(p => `<div class="item" style="cursor:default">${avatar(p.id)}<div class="grow"><b>${esc(p.full_name)}</b> <span class="pill gray">${esc(p.role)}</span>
+      <div class="sm mut">${esc(p.title || '')}${p.title ? ' · ' : ''}${esc(p.email)}</div>
+      <div class="sm mut">${S.teams.filter(t => t.head_id === p.id || S.tm.some(m => m.team_id === t.id && m.user_id === p.id)).map(t => esc(t.name)).join(', ')}</div></div>
+      ${p.id !== S.uid ? `<button class="btn sm" data-act="dm" data-id="${p.id}">Message</button>` : '<button class="btn sm" data-act="editMe">Edit</button>'}</div>`).join('')}</div>
+    <div class="card"><h3>Teams</h3>${S.teams.map(t => { const ms = S.tm.filter(m => m.team_id === t.id);
+      return `<div class="item" style="cursor:default"><div class="grow"><b>${esc(t.name)}</b> <span class="pill gray">${esc(t.kind)}</span>
+        <div class="sm">Head POC: ${t.head_id ? `<b>${esc(nm(t.head_id))}</b>` : '<span class="mut">not set</span>'}</div>
+        <div class="sm mut">${ms.length} member${ms.length === 1 ? '' : 's'}${ms.length ? ': ' + ms.map(m => esc(nm(m.user_id))).join(', ') : ''}</div></div>
+        ${isAdmin() || t.head_id === S.uid ? `<button class="btn sm" data-act="teamMembers" data-id="${t.id}">Members</button>` : ''}</div>`; }).join('') || '<div class="empty">No teams yet' + (isAdmin() ? '. Create them in Admin.' : '') + '</div>'}</div></div>`;
+};
+
+// ---------- assistant ----------
+const AI_SUGG = ['What is overdue right now, and who owns it?', 'Summarise #general from the last 24 hours', 'Schedule a 30-minute review with my team tomorrow at 11 am', 'Give me an overview of this week'];
+VIEWS.assistant = el => {
+  S.ai = S.ai || [];
+  head('Assistant', S.ai.length ? '<button class="btn" data-act="aiNew">New chat</button>' : '');
+  el.innerHTML = `<div class="pane" style="max-width:880px;margin:0 auto;width:100%"><div class="msgs" id="aimsgs"></div>
+    <form class="comp" id="aicomp"><textarea class="grow" style="width:auto" rows="1" id="aibox" placeholder="Ask about tasks, meetings or a channel…"></textarea><button class="btn pri">Send</button></form></div>`;
+  paintAI();
+  const box = $('#aibox'); if(innerWidth > 820) box.focus();
+  box.addEventListener('input', () => { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 140) + 'px'; });
+  box.addEventListener('keydown', e => { if(e.key === 'Enter' && !e.shiftKey && innerWidth > 820){ e.preventDefault(); $('#aicomp').requestSubmit(); } });
+  $('#aicomp').addEventListener('submit', e => { e.preventDefault(); const t = box.value.trim(); if(!t || S.aiBusy) return; box.value = ''; box.style.height = 'auto'; sendAI(t); });
+};
+function paintAI(){
+  const el = $('#aimsgs'); if(!el) return;
+  if(!S.ai.length && !S.aiBusy){
+    el.innerHTML = `<div style="text-align:center;margin-top:8vh"><h2>How can I help, ${esc(S.me.full_name.split(' ')[0])}?</h2>
+      <p class="mut" style="max-width:520px;margin:8px auto">I can line up tasks, schedule meetings, summarise a channel or group, and give you an overview. I work with your own access and cannot read direct messages.</p>
+      <div class="sugg">${AI_SUGG.map(q => `<button class="tab" data-act="aiSuggest" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div></div>`;
+    return;
+  }
+  el.innerHTML = S.ai.map(m => m.role === 'user' ? `<div class="aimsg me"><div class="bub">${esc(m.content)}</div></div>`
+    : `<div class="aimsg ${m.role === 'error' ? 'err' : ''}"><div class="av">✦</div><div style="min-width:0"><div class="bub">${esc(m.content).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</div>
+      ${(m.actions || []).map(a => `<a href="#" class="attf" data-act="aiOpen" data-link="${esc(a.link)}">↗ ${esc(a.label)}</a>`).join('')}</div></div>`).join('') +
+    (S.aiBusy ? '<div class="aimsg"><div class="av">✦</div><div class="bub mut">Working on it…</div></div>' : '');
+  el.scrollTop = el.scrollHeight;
+}
+async function sendAI(text){
+  S.ai.push({ role:'user', content:text }); S.aiBusy = true; paintAI();
+  try {
+    const { data, error } = await sb.functions.invoke('assistant', { body: { messages: S.ai.filter(m => m.role === 'user' || m.role === 'assistant').map(m => ({ role: m.role, content: m.content })) } });
+    if(error){ let msg = error.message; try { const jj = await error.context.json(); if(jj && jj.error) msg = jj.error; } catch(x){} throw new Error(msg); }
+    if(data && data.error) throw new Error(data.error);
+    S.ai.push({ role:'assistant', content: data.reply || 'Done.', actions: data.actions || [] });
+  } catch(x){ S.ai.push({ role:'error', content: x.message || String(x) }); }
+  S.aiBusy = false;
+  if(S.view === 'assistant'){ paintAI(); head('Assistant', '<button class="btn" data-act="aiNew">New chat</button>'); }
+}
+
+// ---------- overview (founders + admins) ----------
+VIEWS.overview = async el => {
+  head('Overview');
+  const { data: o, error } = await sb.rpc('founder_overview'); if(fail(error)) return;
+  const st = (n, l, cls='') => `<div class="card stat"><b style="${cls}">${n}</b><span class="mut sm">${l}</span></div>`;
+  const tbl = (rows, cols) => `<div class="tw"><table><tr>${cols.map(c => `<th>${c[1]}</th>`).join('')}</tr>${rows.map(r => `<tr>${cols.map(c => `<td>${esc(r[c[0]])}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cols.length}" class="empty">No data yet</td></tr>`}</table></div>`;
+  el.innerHTML = `<div class="grid g4" style="margin-bottom:14px">${st(o.users, 'Active people')}${st(o.pending, 'Awaiting approval', o.pending ? 'color:var(--warn)' : '')}${st(o.messages_7d, 'Messages, last 7 days')}
+    ${st(o.open_tasks, 'Open tasks')}${st(o.overdue, 'Overdue tasks', o.overdue ? 'color:var(--bad)' : '')}${st(o.done_7d, 'Tasks done, last 7 days', 'color:var(--ok)')}${st(o.meetings_7d, 'Meetings, next 7 days')}</div>
+    <div class="grid g2"><div class="card"><h3>Tasks by team</h3>${tbl(o.by_team, [['name','Team'],['open','Open'],['overdue','Overdue'],['done_7d','Done 7d']])}</div>
+    <div class="card"><h3>Tasks by person</h3>${tbl(o.by_person, [['name','Person'],['open','Open'],['overdue','Overdue'],['done_7d','Done 7d']])}</div>
+    <div class="card"><h3>Most active channels</h3>${tbl(o.channels, [['name','Channel'],['messages_7d','Messages 7d']])}</div></div>`;
+};
+
+// ---------- admin ----------
+VIEWS.admin = async el => {
+  head('Admin');
+  await loadBase();
+  const tabs = [['users','People & access'],['teams','Teams'],['settings','Settings'],['audit','Audit log']];
+  let body = '';
+  if(S.adminTab === 'users'){
+    const all = Object.values(S.profiles).sort((a,b) => (a.active - b.active) || a.full_name.localeCompare(b.full_name));
+    const roles = S.me.role === 'founder' ? ['founder','admin','head','member'] : ['admin','head','member'];
+    body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="invite">+ Add person</button></div><div class="card tw"><table><tr><th>Person</th><th>Role</th><th>Job title</th><th>Assistant</th><th>Access</th></tr>${all.map(p => {
+      const locked = p.id === S.uid || (p.role === 'founder' && S.me.role !== 'founder');
+      return `<tr><td><b>${esc(p.full_name)}</b><div class="sm mut">${esc(p.email)}</div></td>
+        <td>${locked ? `<span class="pill">${esc(p.role)}</span>` : `<select style="width:auto" data-chg="setRole" data-id="${p.id}">${opts(roles.map(r => ({id:r,name:r})), p.role)}</select>`}</td>
+        <td>${esc(p.title || '')}</td>
+        <td>${['founder','admin'].includes(p.role) ? '<span class="pill gray">Included</span>' : `<label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:400;color:var(--ink)"><input type="checkbox" data-chg="setAI" data-id="${p.id}" ${p.ai_access ? 'checked' : ''}> Allow</label>`}</td>
+        <td>${locked ? '<span class="pill ok">Active</span>' : p.active ? `${p.invited_at && !p.joined_at ? `<span class="pill warn">Invited</span> <button class="btn sm" data-act="reinvite" data-id="${p.id}">Send again</button>` : '<span class="pill ok">Active</span>'} <button class="btn sm danger" data-act="setActive" data-id="${p.id}" data-v="0">Remove access</button>` : `<span class="pill warn">Pending</span> <button class="btn sm pri" data-act="setActive" data-id="${p.id}" data-v="1">Approve</button>`}</td></tr>`; }).join('')}</table></div>`;
+  } else if(S.adminTab === 'teams'){
+    body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="teamEdit">+ New team</button></div><div class="card tw"><table><tr><th>Team</th><th>Type</th><th>Head POC</th><th>Members</th><th></th></tr>
+      ${S.teams.map(t => `<tr><td><b>${esc(t.name)}</b></td><td>${esc(t.kind)}</td><td>${t.head_id ? esc(nm(t.head_id)) : '<span class="mut">not set</span>'}</td><td>${S.tm.filter(m => m.team_id === t.id).length}</td>
+        <td class="row"><button class="btn sm" data-act="teamEdit" data-id="${t.id}">Edit</button><button class="btn sm" data-act="teamMembers" data-id="${t.id}">Members</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No teams yet</td></tr>'}</table></div>`;
+  } else if(S.adminTab === 'settings'){
+    body = `<form class="card" id="setf" style="max-width:480px"><label>Company name</label><input name="org_name" value="${esc(S.org.org_name || '')}" required>
+      <label>Company-wide Google Drive folder link (optional)</label><input name="drive" value="${S.org.drive_folder_id ? 'https://drive.google.com/drive/folders/' + esc(S.org.drive_folder_id) : ''}" placeholder="Paste a Drive folder link">
+      <label>Work email domain</label><input name="allowed_domain" value="${esc(S.org.allowed_domain || '')}" placeholder="e.g. yourcompany.com">
+      <p class="sm mut">People who sign up with this domain get in straight away. Everyone else waits for an admin to approve them. Leave blank to approve every sign-up by hand.</p>
+      <button class="btn pri">Save</button></form>`;
+  } else {
+    const { data } = await sb.from('audit_log').select('*').order('created_at', { ascending:false }).limit(200);
+    body = `<div class="card tw"><table><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr>${(data || []).map(a => `<tr><td class="sm">${fmtDT(a.created_at)}</td><td>${a.actor_id ? esc(nm(a.actor_id)) : 'System'}</td><td>${esc(a.action.toLowerCase())} ${esc(a.entity.replace('_', ' '))}</td>
+      <td class="sm mut">${esc(a.detail?.name || a.detail?.full_name || a.detail?.title || (a.detail?.user_id ? nm(a.detail.user_id) : '') || '')}${a.action === 'INVITE' ? ' · ' + esc(a.detail?.email || '') : a.entity === 'profiles' ? ` · ${esc(a.detail?.role)} · ${a.detail?.active ? 'active' : 'no access'}` : ''}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Nothing logged yet</td></tr>'}</table></div>`;
+  }
+  el.innerHTML = `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k,l]) => `<span class="tab ${S.adminTab === k ? 'on' : ''}" data-act="adminTab" data-t="${k}">${l}</span>`).join('')}</div>${body}`;
+  const sf = $('#setf'); if(sf) sf.addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(sf);
+    const { error } = await sb.from('org_settings').update({ org_name: f.get('org_name').trim(), allowed_domain: f.get('allowed_domain').trim().replace(/^@/, '').toLowerCase() || null, drive_folder_id: driveId(f.get('drive')) }).eq('id', true);
+    if(!fail(error)){ toast('Settings saved'); await loadBase(); } });
+};
+async function sendInvite(body){
+  const { data, error } = await sb.functions.invoke('invite', { body });
+  if(error){ let m = error.message; try { const j = await error.context.json(); if(j && j.error) m = j.error; } catch(x){} throw new Error(m); }
+  if(data && data.error) throw new Error(data.error);
+  await loadBase();
+  if(data.emailed){ closeModal(); toast('Invite emailed to ' + body.email); if(S.view === 'admin') render(); return; }
+  modal('Invite ready: send this link', `<p>${esc(body.full_name || body.email)} has been added, but the invite email could not be sent automatically${data.mail_error ? ' (' + esc(data.mail_error) + ')' : ''}.</p>
+    <p>Copy this one-time link and send it to <b>${esc(body.email)}</b> yourself. Opening it lets them set their password and get in. Treat it like a password: send it only to them.</p>
+    <input id="invlink" readonly value="${esc(data.link)}">`, null, { noFocus:true, extra:'<button type="button" class="btn pri" data-act="copyLink">Copy link</button>' });
+  $('#invlink')?.addEventListener('focus', e => e.target.select());
+  if(S.view === 'admin') render();
+}
+function teamMembersModal(id){
+  const t = team(id); const cur = S.tm.filter(m => m.team_id === id).map(m => m.user_id);
+  modal(t.name + ' members', `<div class="pick" style="max-height:340px">${people().map(p => `<label><input type="checkbox" name="m" value="${p.id}" ${cur.includes(p.id) ? 'checked' : ''}> ${esc(p.full_name)} <span class="mut sm">${esc(p.title || '')}</span></label>`).join('')}</div>`, async f => {
+    const want = f.getAll('m'); const add = want.filter(u => !cur.includes(u)), rem = cur.filter(u => !want.includes(u));
+    if(add.length){ const r = await sb.from('team_members').insert(add.map(u => ({ team_id: id, user_id: u }))); if(r.error) throw r.error; }
+    if(rem.length){ const r = await sb.from('team_members').delete().eq('team_id', id).in('user_id', rem); if(r.error) throw r.error; }
+    await loadBase(); render(); toast('Team updated');
+  });
+}
+
+// ---------- actions ----------
+const A = {
+  closeModal, reload: () => location.reload(),
+  account: () => { const st = pushState();
+    modal('Account', `<div class="row" style="margin:10px 0 14px">${avatar(S.uid)}<div class="grow"><b>${esc(S.me.full_name)}</b><div class="sm mut">${esc(S.me.email)} · ${esc(S.me.role)}</div></div></div>
+      <div class="grid" style="gap:8px"><button type="button" class="btn" data-act="editMe">Edit my profile</button>
+      <button type="button" class="btn" data-act="theme">Appearance (light, dark, eye care)</button>
+      ${st === 'off' ? '<button type="button" class="btn" data-act="enablePush">Turn on alerts on this device</button>' : st === 'on' ? '<button type="button" class="btn" data-act="disablePush">Turn off alerts on this device</button>' : ''}
+      ${gOn() ? '<button type="button" class="btn" data-act="gDisconnect">Disconnect Google Calendar and Drive</button>' : gAllowed() ? '<button type="button" class="btn" data-act="gConnect">Connect Google Calendar and Drive</button>' : ''}
+      <button type="button" class="btn" data-act="refresh">Refresh app (get the latest version)</button>
+      <button type="button" class="btn pri" data-act="signOut">Sign out</button></div>`, null, { noFocus:true }); },
+  forgot: async (el, e) => { e.preventDefault(); const email = ($('#authf [name=email]')?.value || '').trim(); const out = $('#aerr');
+    if(!email){ out.textContent = 'Type your work email above first, then tap Forgot password.'; return; }
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: SITE_URL });
+    out.textContent = error ? error.message : 'If that email has an account, a reset link is on its way.'; },
+  invite: () => { const roles = S.me.role === 'founder' ? ['member','head','admin','founder'] : ['member','head','admin'];
+    modal('Add a person', `<label>Work email</label><input name="email" type="email" required placeholder="name@mulmul.co">
+      <label>Full name</label><input name="full_name" required>
+      <div class="row wrap"><div class="grow"><label>Job title</label><input name="title"></div>
+        <div class="grow"><label>Role</label><select name="role">${opts(roles.map(r => ({id:r,name:r})), 'member')}</select></div></div>
+      ${S.teams.length ? `<label>Teams</label><div class="pick">${S.teams.map(t => `<label><input type="checkbox" name="team" value="${t.id}"> ${esc(t.name)}</label>`).join('')}</div>` : ''}
+      <p class="sm mut">They get an email invite, accept it, and set their own password. People with a mulmul.co Google account can also just use Continue with Google.</p>`,
+      async f => { await sendInvite({ email: f.get('email').trim(), full_name: f.get('full_name').trim(), title: f.get('title').trim(), role: f.get('role'), team_ids: f.getAll('team') }); return false; }, { ok:'Send invite' }); },
+  reinvite: async el => { const p = P(el.dataset.id); toast('Sending…'); try { await sendInvite({ email: p.email, full_name: p.full_name, title: p.title || '', role: p.role, team_ids: [] }); } catch(x){ toast(x.message || String(x)); } },
+  copyLink: async el => { try { await navigator.clipboard.writeText($('#invlink').value); toast('Link copied'); } catch(x){ $('#invlink').select(); toast('Press Ctrl+C / long-press to copy'); } },
+  gConnect: () => { if(!gAllowed()){ toast('Google connection is only for ' + gDomain() + ' accounts'); return; } gConnect(); },
+  gDisconnect: async () => { try { await gfn({ action:'disconnect' }); } catch(x){ toast(x.message); return; } S.me.google_connected = false; G.token = null; closeModal(); toast('Google disconnected'); render(); },
+  openGEvent: el => { const e = (S.gevents || []).find(x => x.id === el.dataset.id); if(!e) return;
+    modal(e.title, `<p><b>${e.allDay ? fmtDay(e.starts_at) + ' · All day' : fmtDT(e.starts_at) + ' – ' + (sameDay(e.starts_at, e.ends_at) ? fmtTime(e.ends_at) : fmtDT(e.ends_at))}</b><br><span class="mut">From your Google Calendar${e.organizer ? ' · organised by ' + esc(e.organizer) : ''}</span></p>
+      ${e.meet ? `<p><a class="btn pri" href="${esc(e.meet)}" target="_blank" rel="noopener" style="text-decoration:none">Join with Google Meet</a></p>` : ''}${e.location ? `<p>${esc(e.location)}</p>` : ''}
+      ${e.guests.length ? `<label>Guests</label><div class="sm">${e.guests.map(esc).join(', ')}</div>` : ''}`, null,
+      { noFocus:true, extra: e.html ? `<a class="btn" href="${esc(e.html)}" target="_blank" rel="noopener" style="text-decoration:none">Open in Google Calendar</a>` : '' }); },
+  driveClose: () => $('#dov')?.remove(),
+  drivePicked: el => { const f = { name: el.dataset.name, url: el.dataset.url }; $('#dov')?.remove(); if(S.driveCb && f.url) S.driveCb(f); },
+  driveOpen: (el, e) => { e.preventDefault(); (S.drivePath = S.drivePath || []).push({ id: el.dataset.id, name: el.dataset.name }); render(); },
+  driveUp: () => { (S.drivePath || []).pop(); render(); },
+  attachChat: () => { modal('Attach', `<label class="choice"><span style="font-size:22px">📱</span><span><b>Photo or file from this device</b><br><span class="sm mut">Up to 5 files, 100 MB each. Only people in this conversation can open them.</span></span><input type="file" id="devfile" multiple hidden></label>
+      ${gOn() || gAllowed() ? `<button type="button" class="choice" data-act="attachDrive"><span style="font-size:22px">📁</span><span><b>From Google Drive</b><br><span class="sm mut">Shares a link to a file in your Drive.</span></span></button>` : ''}`, null, { noFocus:true });
+    $('#devfile').addEventListener('change', e => { const fl = [...e.target.files]; closeModal(); addPending(fl); }); },
+  attachDrive: () => { closeModal(); drivePick(f => { const b = $('#mbox'); if(!b) return; b.value = (b.value ? b.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; b.dispatchEvent(new Event('input')); b.focus(); }); },
+  rmPend: el => { (S.pending || []).splice(+el.dataset.i, 1); paintPend(); },
+  openAtt: (el, e) => { e.preventDefault(); const n = el.dataset.name || 'file'; previewFile({ name: n, path: el.dataset.path, mime: extMime(n) || (el.dataset.img === '1' ? 'image/jpeg' : '') }); },
+  attachTask: (el, e) => { e.preventDefault(); drivePick(f => { const t = $('#ov textarea[name=description]'); if(t) t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url; }); },
+  attachNote: () => drivePick(f => { const t = $('#nbody'); if(!t) return; t.value = (t.value ? t.value.replace(/\s*$/, '\n') : '') + '📎 ' + f.name + ': ' + f.url + '\n'; t.dispatchEvent(new Event('input')); }),
+  aiNew: () => { S.ai = []; render(); },
+  aiSuggest: el => { if(!S.aiBusy) sendAI(el.dataset.q); },
+  aiOpen: (el, e) => { e.preventDefault(); openLink(el.dataset.link); },
+  sideToggle: () => { const on = $('#shell').classList.toggle('mini'); try { localStorage.setItem('mt-side', on ? 'mini' : 'full'); } catch(e){} },
+  closeDrawer: () => closeDrawer(), chanSearch: () => chanSearch(), chanInfo: () => chanInfo(), infoTab: el => chanInfo(el.dataset.t),
+  jumpMsg: (el, e) => { e.preventDefault(); jumpMsg(el.dataset.id, el.dataset.at); },
+  togglePin: async el => { const id = el.dataset.id || S.chan; const c = S.channels.find(x => x.id === id); if(!c) return; const on = !c.pinned;
+    const { error } = await sb.rpc('set_pin', { c: id, p_on: on }); if(fail(error)) return; c.pinned = on; paintChanList();
+    if(id === S.chan) $('#pinbtn')?.classList.toggle('on', on); toast(on ? 'Pinned to the top' : 'Unpinned'); },
+  menu: () => $('#shell')?.classList.toggle('menu'), refresh: () => refreshApp(),
+  theme: () => themeModal(), setTheme: el => { setTheme(el.dataset.t); themeModal(); },
+  signOut: async (el, e) => { e.preventDefault(); closeModal(); await dropPush(); await sb.auth.signOut(); },
+  enablePush: async () => { const ok = await syncPush(true); closeModal(); if(ok) toast('Alerts are on for this device'); if(S.view === 'home') render(); paintPanel(); },
+  disablePush: async () => { await dropPush(); closeModal(); toast('Alerts turned off on this device'); paintPanel(); if(S.view === 'home') render(); },
+  authSwitch: (el, e) => { e.preventDefault(); authMode = authMode === 'in' ? 'up' : 'in'; renderAuth(); },
+  google: () => sb.auth.signInWithOAuth({ provider:'google', options:{ redirectTo: location.origin + location.pathname } }),
+  go: el => go(el.dataset.v),
+  togglePanel: () => { S.panel = !S.panel; paintPanel(); },
+  readAll: async () => { const now = new Date().toISOString(); S.notifs.forEach(n => n.read_at = n.read_at || now); paintBell(); await sb.from('notifications').update({ read_at: now }).is('read_at', null); },
+  openNotif: async el => { const n = S.notifs.find(x => x.id === el.dataset.id); if(!n) return; S.panel = false; paintPanel();
+    if(!n.read_at){ n.read_at = new Date().toISOString(); paintBell(); sb.from('notifications').update({ read_at: n.read_at }).eq('id', n.id).then(() => {}); } openLink(n.link); },
+  // chat
+  openChan: el => { if(S.chatQ){ S.chatQ = ''; const mi = $('#msearch'); if(mi) mi.value = ''; } openChan(el.dataset.id); },
+  openChanModal: el => { closeModal(); openChan(el.dataset.id); },
+  chatBack: () => { S.chan = null; $('#chat').classList.remove('open'); loadChannels(); },
+  pickMention: el => { const b = $('#mbox'); const pos = b.selectionStart; const len = +el.dataset.len;
+    b.value = b.value.slice(0, pos - len) + el.dataset.n + ' ' + b.value.slice(pos); $('#mlist').hidden = true; b.focus(); },
+  earlier: async () => { const first = S.msgs[0]; if(!first) return;
+    const { data } = await sb.from('messages').select('*').eq('channel_id', S.chan).lt('created_at', first.created_at).order('created_at', { ascending:false }).limit(100);
+    S.msgs = (data || []).reverse().concat(S.msgs); S.more = (data || []).length === 100; paintMsgs(false); },
+  newChannel: () => { const tl = isAdmin() ? S.teams : myTeams();
+    modal('New channel', `<label>Name</label><input name="name" required maxlength="60" placeholder="e.g. launches">
+      <label>Type</label><select name="kind"><option value="channel">Channel — everyone in it can post</option>${isAdmin() || S.teams.some(t => t.head_id === S.uid) ? '<option value="announcement">Announcements — only admins and heads post</option>' : ''}</select>
+      <label>Who can see it</label><select name="team">${teamOpts('', 'Whole company', tl)}</select>
+      <p class="sm mut">Channels are open to the whole company or a whole team. To talk with specific people only, create a group instead.</p>`,
+      async f => { const { data, error } = await sb.rpc('create_channel', { p_name: f.get('name').trim().toLowerCase().replace(/\s+/g, '-'), p_kind: f.get('kind'), p_team: f.get('team') || null, p_private: false, p_members: [] });
+        if(error) throw error; S.chan = data; await loadChannels(); openChan(data); }, { ok:'Create' }); },
+  newDM: () => { modal('New message', `<input class="pickq" placeholder="Search by name, title or email…" style="margin-top:10px" autocomplete="off"><div class="pickbox" style="max-height:55vh;overflow:auto;margin-top:6px">${people().filter(p => p.id !== S.uid).map(p => `<div class="item" data-act="dm" data-id="${p.id}" data-q="${esc(((p.full_name || '') + ' ' + (p.title || '') + ' ' + (p.email || '')).toLowerCase())}">${avatar(p.id)}<div class="grow"><b>${esc(p.full_name)}</b><div class="sm mut">${esc(p.title || p.email)}</div></div></div>`).join('') || '<div class="empty">No one else has joined yet</div>'}</div>`); },
+  searchMsgsQ: () => { const t = (S.chatQ || '').trim(); if(t) searchMsgs(t); },
+  dm: async el => { const { data, error } = await sb.rpc('open_dm', { other: el.dataset.id }); if(fail(error)) return; closeModal(); S.chan = data; if(S.chatQ){ S.chatQ = ''; const mi = $('#msearch'); if(mi) mi.value = ''; }
+    if(S.view !== 'chat') go('chat'); else { await loadChannels(); openChan(data); } },
+  newGroup: () => modal('New group', `<label>Group name</label><input name="name" required maxlength="60" placeholder="e.g. Diwali launch team">
+      <label>Who should be in it</label>${pickList('mem')}<p class="sm mut">Only the people you pick can see this group and its history. You can add or remove people later.</p>`,
+      async f => { const mem = f.getAll('mem'); if(!mem.length) throw new Error('Pick at least one person');
+        const { data, error } = await sb.rpc('create_channel', { p_name: f.get('name').trim(), p_kind: 'channel', p_team: null, p_private: true, p_members: mem });
+        if(error) throw error; S.chan = data; await loadChannels(); openChan(data); }, { ok:'Create group' }),
+  members: async () => { const cid = S.chan;
+    const [m, c] = await Promise.all([sb.from('channel_members').select('user_id').eq('channel_id', cid), sb.from('channels').select('created_by').eq('id', cid).maybeSingle()]);
+    if(fail(m.error)) return; const ids = (m.data || []).map(x => x.user_id); const boss = isAdmin() || c.data?.created_by === S.uid;
+    const rest = people().filter(p => !ids.includes(p.id));
+    modal('Group members', ids.map(u => `<div class="row" style="padding:5px 0">${avatar(u)}<span class="grow">${esc(nm(u))}${u === c.data?.created_by ? ' <span class="pill gray">creator</span>' : ''}</span>
+        ${boss && u !== S.uid ? `<button type="button" class="btn sm danger" data-act="removeMember" data-id="${u}">Remove</button>` : ''}</div>`).join('') +
+      (rest.length ? `<label>Add people</label><div class="pick">${rest.map(p => `<label><input type="checkbox" name="mem" value="${p.id}"> ${esc(p.full_name)}</label>`).join('')}</div>` : ''),
+      rest.length ? async f => { const mem = f.getAll('mem'); if(!mem.length) return; const { error } = await sb.rpc('add_channel_members', { c: cid, p_members: mem }); if(error) throw error; toast('Added to group'); } : null,
+      { ok:'Add selected', noFocus:true, extra: ids.includes(S.uid) ? '<button type="button" class="btn danger" data-act="leaveGroup">Leave group</button>' : '' }); },
+  removeMember: async el => { const { error } = await sb.rpc('remove_channel_member', { c: S.chan, p_user: el.dataset.id }); if(fail(error)) return; toast('Removed from group'); A.members(); },
+  leaveGroup: async () => { const { error } = await sb.from('channel_members').delete().eq('channel_id', S.chan).eq('user_id', S.uid); if(fail(error)) return;
+    closeModal(); toast('You left the group'); S.chan = null; $('#chat')?.classList.remove('open'); await loadChannels(); $('#pane').innerHTML = '<div class="empty" style="margin:auto">Pick a conversation</div>'; },
+  readers: async () => { const c = S.channels.find(x => x.id === S.chan); const { data, error } = await sb.rpc('channel_readers', { c: S.chan }); if(fail(error)) return;
+    const lastMsg = S.msgs[S.msgs.length - 1]; if(!lastMsg){ toast('No announcements yet'); return; }
+    const aud = people().filter(p => p.id !== lastMsg.sender_id && (!c.team_id || team(c.team_id)?.head_id === p.id || S.tm.some(m => m.team_id === c.team_id && m.user_id === p.id)));
+    const read = new Set((data || []).filter(r => r.last_read_at && r.last_read_at >= lastMsg.created_at).map(r => r.user_id));
+    modal(`Latest announcement: read by ${aud.filter(p => read.has(p.id)).length} of ${aud.length}`, aud.map(p => `<div class="row" style="padding:5px 0"><span class="grow">${esc(p.full_name)}</span><span class="pill ${read.has(p.id) ? 'ok' : 'warn'}">${read.has(p.id) ? 'Read' : 'Not yet'}</span></div>`).join('') || '<div class="empty">No audience yet</div>'); },
+  msgTask: el => { const m = S.msgs.find(x => x.id === el.dataset.id); if(!m) return; const c = S.channels.find(x => x.id === m.channel_id);
+    taskModal(null, { title: m.body.split('\n')[0].slice(0, 120), description: `From ${nm(m.sender_id)} in ${c ? chanName(c) : 'chat'}:\n${m.body}`, team_id: c?.team_id || null, source_message_id: m.id }); },
+  msgEdit: el => { const m = S.msgs.find(x => x.id === el.dataset.id); if(!m) return;
+    modal('Edit message', `<textarea name="body" rows="4" required>${esc(m.body)}</textarea>`, async f => { const { error } = await sb.from('messages').update({ body: f.get('body').trim() }).eq('id', m.id); if(error) throw error; }); },
+  msgDel: el => modal('Delete this message?', '<p class="mut">Others will see “Message deleted”.</p>', async () => { const m0 = S.msgs.find(x => x.id === el.dataset.id); const { error } = await sb.from('messages').update({ deleted_at: new Date().toISOString(), attachments: [] }).eq('id', el.dataset.id); if(error) throw error;
+      if(m0 && Array.isArray(m0.attachments) && m0.attachments.length) sb.storage.from('files').remove(m0.attachments.map(a => a.path)); }, { ok:'Delete' }),
+  // tasks
+  newTask: () => taskModal(null), openTask: (el, e) => { if(e.target.matches('input[type=checkbox]')) return; taskModal(el.dataset.id); },
+  toggleDone: async el => { const { error } = await sb.from('tasks').update({ status: el.checked ? 'done' : 'todo' }).eq('id', el.dataset.id); if(!fail(error)) loadTasks(); },
+  taskFilter: el => { S.taskFilter = el.dataset.f; paintTasks(); }, taskMode: el => { S.taskMode = el.dataset.m; paintTasks(); },
+  addUpdate: async el => { const b = $('#upbox'); const body = b.value.trim(); if(!body) return;
+    const { error } = await sb.from('task_updates').insert({ task_id: el.dataset.id, user_id: S.uid, body }); if(fail(error)) return; b.value = '';
+    const u = $('#ups'); if(u.querySelector('.mut.sm')) u.innerHTML = ''; u.insertAdjacentHTML('beforeend', `<div class="u"><b>${esc(S.me.full_name)}</b> <span class="sm mut">just now</span><div style="white-space:pre-wrap">${esc(body)}</div></div>`); },
+  delTask: async el => { const { error } = await sb.from('tasks').delete().eq('id', el.dataset.id); if(fail(error)) return; closeModal(); toast('Task deleted'); if(S.view === 'tasks') loadTasks(); else render(); },
+  // calendar
+  newEvent: () => eventModal('meeting'), newBlock: () => eventModal('block'), openEvent: el => openEvent(el.dataset.id),
+  week: el => { const k = +el.dataset.d; if(!k) S.weekStart = monday(new Date()); else { S.weekStart = new Date(S.weekStart); S.weekStart.setDate(S.weekStart.getDate() + 7 * k); } render(); },
+  rsvp: async el => { const { error } = await sb.from('event_attendees').update({ response: el.dataset.r }).eq('event_id', el.dataset.id).eq('user_id', S.uid); if(fail(error)) return; closeModal(); toast('Reply saved'); render(); },
+  delEvent: async el => { const ev0 = S.events.find(x => x.id === el.dataset.id);
+    if(ev0 && ev0.google_event_id && ev0.created_by === S.uid && gOn()){ try { await gapi('/calendar/v3/calendars/primary/events/' + encodeURIComponent(ev0.google_event_id) + '?sendUpdates=all', { method:'DELETE' }); } catch(x){ if(x.status !== 404 && x.status !== 410) console.warn(x); } }
+    const { error } = await sb.from('events').delete().eq('id', el.dataset.id); if(fail(error)) return; closeModal(); toast('Deleted'); render(); },
+  eventNotes: async el => { const e = S.events.find(x => x.id === el.dataset.id); const { data } = await sb.from('notes').select('id').eq('event_id', e.id).limit(1);
+    if(data && data[0]){ S.note = data[0].id; closeModal(); go('notes'); return; }
+    newNote({ event_id: e.id, title: 'Notes: ' + e.title, body: `Meeting: ${e.title}\nWhen: ${fmtDT(e.starts_at)}\nAttendees: ${[e.created_by, ...e.event_attendees.map(a => a.user_id)].map(nm).join(', ')}\n\nDiscussion\n- \n\nDecisions\n- \n\nAction items\n- `,
+      ...(e.team_id && (isAdmin() || myTeams().some(t => t.id === e.team_id)) ? { visibility:'team', team_id: e.team_id } : {}) }); },
+  // notes
+  newNote: () => newNote(), openNote: el => openNote(el.dataset.id), noteBack: () => { S.note = null; $('#notes').classList.remove('open'); paintNoteList(); },
+  delNote: el => modal('Delete this note?', '<p class="mut">This cannot be undone.</p>', async () => { const { error } = await sb.from('notes').delete().eq('id', el.dataset.id); if(error) throw error; S.note = null; render(); }, { ok:'Delete' }),
+  // files
+  upload: () => { const fsc = fileScope();
+    if(S.view === 'files' && fsc.root){
+      if(!gOn()){ toast('Connect Google first'); return; }
+      const cur = (S.drivePath || []).length ? S.drivePath[S.drivePath.length - 1].id : fsc.root;
+      modal('Upload to Google Drive', `<label>File (up to 50 MB)</label><input type="file" name="file" required><p class="sm mut">Goes into the ${esc(fsc.label)} folder in Google Drive. Who can open it is controlled by that folder's sharing in Drive.</p>`, async f => {
+        const file = f.get('file'); if(!file || !file.size) throw new Error('Choose a file'); if(file.size > 52428800) throw new Error('File is larger than 50 MB');
+        const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: file.name, parents:[cur] })], { type:'application/json' })); fd.append('file', file);
+        await gapi('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id', { method:'POST', body: fd });
+        toast('Uploaded to Google Drive'); render(); }, { ok:'Upload' });
+      return; }
+    const fol = S.view === 'files' && S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
+    modal('Upload files', `<label>Files (up to 100 MB each)</label><input type="file" name="file" required multiple>
+      ${fol ? `<p class="sm mut">These go into the folder “${esc(fol.name)}”, shared with: ${esc(audLabel(folderAud(fol)))}.</p>` : `<label>Who can see them</label>${sharePick(presetAud(), shareList())}`}`, async f => {
+      const files = f.getAll('file').filter(x => x && x.size); if(!files.length) throw new Error('Choose at least one file');
+      const big = files.find(x => x.size > 104857600); if(big) throw new Error(big.name + ' is larger than 100 MB');
+      const sh = fol ? { all:false, teams:[] } : readShare(f);
+      for(const file of files){
+        const path = `org/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
+        const up = await sb.storage.from('files').upload(path, file, { contentType: file.type || undefined }); if(up.error) throw up.error;
+        const { error } = await sb.rpc('add_file', { p_name: file.name, p_path: path, p_size: file.size, p_mime: file.type || null, p_folder: fol ? fol.id : null, p_all: sh.all, p_teams: sh.teams });
+        if(error){ await sb.storage.from('files').remove([path]); throw error; }
+      }
+      toast(files.length > 1 ? files.length + ' files uploaded' : 'Uploaded'); render(); }, { ok:'Upload' }); },
+  previewFile: (el, e) => { e.preventDefault(); const f = S.files.find(x => x.id === el.dataset.id); if(f) previewFile(f); },
+  openFolder: (el, e) => { e.preventDefault(); S.folderId = el.dataset.id; render(); },
+  folderUp: () => { const c = (S.folders || []).find(x => x.id === S.folderId); S.folderId = c ? c.parent_id : null; render(); },
+  newFolder: () => { const par = S.folderId ? (S.folders || []).find(x => x.id === S.folderId) : null;
+    modal('New folder', `<label>Folder name</label><input name="name" required maxlength="120" placeholder="e.g. Diwali campaign, Store launch – Pune">
+      ${par ? `<p class="sm mut">Created inside “${esc(par.name)}”, shared with: ${esc(audLabel(folderAud(par)))}.</p>` : `<label>Who can see it</label>${sharePick(presetAud(), shareList())}`}`, async f => {
+      const sh = par ? { all:false, teams:[] } : readShare(f);
+      const { data, error } = await sb.rpc('add_folder', { p_name: f.get('name').trim(), p_parent: par ? par.id : null, p_all: sh.all, p_teams: sh.teams });
+      if(error) throw error; S.folderId = data; if(!par) S.fileTeam = ''; toast('Folder created'); render(); }, { ok:'Create folder' }); },
+  shareFile: el => { const fi = S.files.find(x => x.id === el.dataset.id);
+    modal('Share “' + fi.name + '”', `<label>Who can see it</label>${sharePick(fileAud(fi), shareList())}`, async f => { const sh = readShare(f);
+      const { error } = await sb.rpc('set_file_sharing', { p_file: fi.id, p_all: sh.all, p_teams: sh.teams }); if(error) throw error; toast('Sharing updated'); render(); }, { noFocus:true }); },
+  shareFolder: el => { const fo = S.folders.find(x => x.id === el.dataset.id);
+    modal('Share the folder “' + fo.name + '”', `<label>Who can see it</label>${sharePick(folderAud(fo), shareList())}<p class="sm mut">Everything inside the folder follows this.</p>`, async f => { const sh = readShare(f);
+      const { error } = await sb.rpc('set_folder_sharing', { p_folder: fo.id, p_all: sh.all, p_teams: sh.teams }); if(error) throw error; toast('Sharing updated'); render(); }, { noFocus:true }); },
+  renameFolder: el => { const fo = S.folders.find(x => x.id === el.dataset.id);
+    modal('Rename folder', `<label>Folder name</label><input name="name" required maxlength="120" value="${esc(fo.name)}">`, async f => { const { error } = await sb.from('file_folders').update({ name: f.get('name').trim() }).eq('id', fo.id); if(error) throw error; render(); }); },
+  delFolder: el => { const fo = S.folders.find(x => x.id === el.dataset.id);
+    modal('Delete the folder “' + fo.name + '”?', '<p class="mut">The folder and its sub-folders are removed. The files inside are kept, move back to the main Files list, and stay shared with the same people.</p>', async () => { const { error } = await sb.from('file_folders').delete().eq('id', fo.id); if(error) throw error; toast('Folder deleted'); render(); }, { ok:'Delete folder' }); },
+  moveFile: el => { const fi = S.files.find(x => x.id === el.dataset.id); const cands = S.folders || [];
+    modal('Move “' + fi.name + '”', cands.length ? `<label>Move to</label><select name="folder">${opts(cands.map(x => ({ id: x.id, name: folderTrail(x).map(y => y.name).join(' › ') + '  ·  ' + audLabel(folderAud(x)) })), fi.folder_id, 'Main list (no folder)')}</select>
+      <p class="sm mut">Inside a folder, the file is shared with whoever the folder is shared with. Moved back to the main list, it keeps that folder's sharing until you change it.</p>` : `<p>There are no folders yet. Create one with “+ Folder”.</p>`,
+      cands.length ? async f => { const { error } = await sb.from('files').update({ folder_id: f.get('folder') || null }).eq('id', fi.id); if(error) throw error; toast('Moved'); render(); } : null, { ok:'Move' }); },
+  download: async (el, e) => { e.preventDefault(); const f = S.files.find(x => x.id === el.dataset.id); const { data, error } = await sb.storage.from('files').createSignedUrl(f.path, 120, { download: f.name });
+    if(fail(error)) return; const a = document.createElement('a'); a.href = data.signedUrl; a.target = '_blank'; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove(); },
+  delFile: el => { const f = S.files.find(x => x.id === el.dataset.id);
+    modal('Delete ' + f.name + '?', '<p class="mut">This cannot be undone.</p>', async () => { await sb.storage.from('files').remove([f.path]); const { error } = await sb.from('files').delete().eq('id', f.id); if(error) throw error; render(); }, { ok:'Delete' }); },
+  // people + admin
+  editMe: () => modal('My profile', `<label>Full name</label><input name="full_name" required value="${esc(S.me.full_name)}"><label>Job title</label><input name="title" value="${esc(S.me.title || '')}">`, async f => {
+    const { error } = await sb.from('profiles').update({ full_name: f.get('full_name').trim(), title: f.get('title').trim() || null }).eq('id', S.uid); if(error) throw error; await loadBase(); renderShell(); paintBell(); loadChannels(); go('people'); }),
+  adminTab: el => { S.adminTab = el.dataset.t; render(); },
+  setActive: async el => { const { error } = await sb.from('profiles').update({ active: el.dataset.v === '1' }).eq('id', el.dataset.id); if(!fail(error)){ toast(el.dataset.v === '1' ? 'Approved' : 'Access removed'); render(); } },
+  teamEdit: el => { const t = el.dataset.id ? team(el.dataset.id) : null;
+    modal(t ? 'Edit team' : 'New team', `<label>Name</label><input name="name" required value="${esc(t?.name || '')}" placeholder="e.g. Marketing, Store – Khan Market">
+      <label>Type</label><select name="kind">${opts(['department','store','project'].map(x => ({id:x,name:x})), t?.kind || 'department')}</select>
+      <label>Head POC</label><select name="head_id">${peopleOpts(t?.head_id, 'Not set')}</select>
+      <label>Google Drive folder link (optional)</label><input name="drive" value="${t?.drive_folder_id ? 'https://drive.google.com/drive/folders/' + esc(t.drive_folder_id) : ''}" placeholder="Paste the team's Drive folder link">
+      <p class="sm mut">When set, this team's Files tab shows that folder and uploads go into it. Share the folder with the team in Google Drive.</p>`, async f => {
+      const dv = f.get('drive').trim(); if(dv && !driveId(dv)) throw new Error('That does not look like a Google Drive folder link');
+      const row = { name: f.get('name').trim(), kind: f.get('kind'), head_id: f.get('head_id') || null, drive_folder_id: driveId(dv) };
+      const { error } = t ? await sb.from('teams').update(row).eq('id', t.id) : await sb.from('teams').insert(row); if(error) throw error; toast('Team saved'); render(); },
+      { extra: t ? `<button type="button" class="btn danger" data-act="teamDel" data-id="${t.id}">Delete team</button>` : '' }); },
+  teamDel: async el => { const { error } = await sb.from('teams').delete().eq('id', el.dataset.id); if(fail(error)) return; closeModal(); toast('Team deleted'); render(); },
+  teamMembers: el => teamMembersModal(el.dataset.id),
+};
+const C = {
+  taskTeam: el => { S.taskTeam = el.value; paintTasks(); },
+  calWho: el => { S.calWho = el.value; render(); },
+  setAI: async el => { const { error } = await sb.from('profiles').update({ ai_access: el.checked }).eq('id', el.dataset.id); if(fail(error)){ el.checked = !el.checked; return; } toast(el.checked ? 'Assistant allowed' : 'Assistant turned off'); },
+  fileTeam: el => { S.fileTeam = el.value; S.drivePath = []; S.folderId = null; render(); },
+  setRole: async el => { const { error } = await sb.from('profiles').update({ role: el.value }).eq('id', el.dataset.id); if(!fail(error)) toast('Role updated'); render(); },
+};
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if(S.panel && !e.target.closest('#npanel') && !(el && el.dataset.act === 'togglePanel')){ S.panel = false; paintPanel(); }
+  if(!el) return; const f = A[el.dataset.act]; if(f) f(el, e);
+});
+document.addEventListener('keydown', e => { if(e.key === 'Enter' && e.target.classList && e.target.classList.contains('pickq')) e.preventDefault(); });
+document.addEventListener('input', e => { if(!e.target.classList || !e.target.classList.contains('pickq')) return; const q = e.target.value.trim().toLowerCase(); const box = e.target.nextElementSibling;
+  if(box) box.querySelectorAll('[data-q]').forEach(x => { x.style.display = !q || x.dataset.q.includes(q) ? '' : 'none'; }); });
+document.addEventListener('change', e => { const el = e.target.closest('[data-chg]'); if(el && C[el.dataset.chg]) C[el.dataset.chg](el); });
+window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if(S.me && S.me.active && VIEWS[v] && v !== S.view) go(v); });
+document.addEventListener('visibilitychange', () => { if(!document.hidden && S.me && S.me.active){ loadChannels(); loadNotifs(); checkUpdate(); } });
+sb.auth.onAuthStateChange((ev, session) => { if(session && session.provider_refresh_token) pendingG = session.provider_refresh_token; setTimeout(() => boot(session), 0); });
