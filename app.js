@@ -22,7 +22,7 @@ const canAI = () => !!S.me && (isAdmin() || !!S.me.ai_access);
 // Company dashboards that sign in with Threads accounts: [key in the database, name shown to admins]. Founders and admins can open all of them.
 const DASHBOARDS = [
   ['ads-control','Ads Control','https://ads.mulmul.co/','Meta ads against real stock, the ad product scorer and audience segments.'],
-  ['sales','Sales & Replenishment','https://aryan-arya05.github.io/mulmul-stock-lookup/sales/','Sales, replenishment, production, inwards and stock aging.'],
+  ['sales','Sales & Replenishment','https://sales.mulmul.co/','Sales, replenishment, production, inwards and stock aging.'],
 ];
 const team = id => S.teams.find(t => t.id === id);
 const myTeams = () => S.teams.filter(t => t.head_id === S.uid || S.tm.some(m => m.team_id === t.id && m.user_id === S.uid));
@@ -176,7 +176,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.23-3';
+const APP_VERSION = '2026.11.23-4';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
