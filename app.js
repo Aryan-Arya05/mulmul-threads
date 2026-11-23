@@ -19,6 +19,8 @@ const nm = id => P(id).full_name || P(id).email;
 const ini = id => (nm(id).split(/\s+/).map(w => w[0]).join('').slice(0,2) || '?').toUpperCase();
 const isAdmin = () => S.me && ['founder','admin'].includes(S.me.role);
 const canAI = () => !!S.me && (isAdmin() || !!S.me.ai_access);
+// Company dashboards that sign in with Threads accounts: [key in the database, name shown to admins]. Founders and admins can open all of them.
+const DASHBOARDS = [['ads-control','Ads Control']];
 const team = id => S.teams.find(t => t.id === id);
 const myTeams = () => S.teams.filter(t => t.head_id === S.uid || S.tm.some(m => m.team_id === t.id && m.user_id === S.uid));
 const people = () => Object.values(S.profiles).filter(p => p.active).sort((a,b) => a.full_name.localeCompare(b.full_name));
@@ -171,7 +173,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.14-1';
+const APP_VERSION = '2026.11.23-1';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -969,12 +971,15 @@ VIEWS.admin = async el => {
   if(S.adminTab === 'users'){
     const all = Object.values(S.profiles).sort((a,b) => (a.active - b.active) || a.full_name.localeCompare(b.full_name));
     const roles = S.me.role === 'founder' ? ['founder','admin','head','member'] : ['admin','head','member'];
-    body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="invite">+ Add person</button></div><div class="card tw"><table><tr><th>Person</th><th>Role</th><th>Job title</th><th>Assistant</th><th>Access</th></tr>${all.map(p => {
+    const { data: dashRows } = await sb.from('dash_access').select('user_id,dashboard');
+    const dashHas = new Set((dashRows || []).map(r => r.user_id + '|' + r.dashboard));
+    body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="invite">+ Add person</button></div><div class="card tw"><table><tr><th>Person</th><th>Role</th><th>Job title</th><th>Assistant</th><th>Dashboards</th><th>Access</th></tr>${all.map(p => {
       const locked = p.id === S.uid || (p.role === 'founder' && S.me.role !== 'founder');
       return `<tr><td><b>${esc(p.full_name)}</b><div class="sm mut">${esc(p.email)}</div></td>
         <td>${locked ? `<span class="pill">${esc(p.role)}</span>` : `<select style="width:auto" data-chg="setRole" data-id="${p.id}">${opts(roles.map(r => ({id:r,name:r})), p.role)}</select>`}</td>
         <td>${esc(p.title || '')}</td>
         <td>${['founder','admin'].includes(p.role) ? '<span class="pill gray">Included</span>' : `<label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:400;color:var(--ink)"><input type="checkbox" data-chg="setAI" data-id="${p.id}" ${p.ai_access ? 'checked' : ''}> Allow</label>`}</td>
+        <td>${['founder','admin'].includes(p.role) ? '<span class="pill gray">All</span>' : DASHBOARDS.map(([k,l]) => `<label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:400;color:var(--ink)"><input type="checkbox" data-chg="setDash" data-id="${p.id}" data-dash="${k}" ${dashHas.has(p.id + '|' + k) ? 'checked' : ''}> ${esc(l)}</label>`).join('')}</td>
         <td>${locked ? '<span class="pill ok">Active</span>' : p.active ? `${p.invited_at && !p.joined_at ? `<span class="pill warn">Invited</span> <button class="btn sm" data-act="reinvite" data-id="${p.id}">Send again</button>` : '<span class="pill ok">Active</span>'} <button class="btn sm danger" data-act="setActive" data-id="${p.id}" data-v="0">Remove access</button>` : `<span class="pill warn">Pending</span> <button class="btn sm pri" data-act="setActive" data-id="${p.id}" data-v="1">Approve</button>`}</td></tr>`; }).join('')}</table></div>`;
   } else if(S.adminTab === 'teams'){
     body = `<div style="margin-bottom:10px"><button class="btn pri" data-act="teamEdit">+ New team</button></div><div class="card tw"><table><tr><th>Team</th><th>Type</th><th>Head POC</th><th>Members</th><th></th></tr>
@@ -1225,6 +1230,8 @@ const A = {
 const C = {
   taskTeam: el => { S.taskTeam = el.value; paintTasks(); },
   calWho: el => { S.calWho = el.value; render(); },
+  setDash: async el => { const q = el.checked ? sb.from('dash_access').insert({ user_id: el.dataset.id, dashboard: el.dataset.dash, level: 'view', granted_by: S.uid }) : sb.from('dash_access').delete().eq('user_id', el.dataset.id).eq('dashboard', el.dataset.dash);
+    const { error } = await q; if(fail(error)){ el.checked = !el.checked; return; } toast(el.checked ? 'Dashboard access given' : 'Dashboard access removed'); },
   setAI: async el => { const { error } = await sb.from('profiles').update({ ai_access: el.checked }).eq('id', el.dataset.id); if(fail(error)){ el.checked = !el.checked; return; } toast(el.checked ? 'Assistant allowed' : 'Assistant turned off'); },
   fileTeam: el => { S.fileTeam = el.value; S.drivePath = []; S.folderId = null; render(); },
   setRole: async el => { const { error } = await sb.from('profiles').update({ role: el.value }).eq('id', el.dataset.id); if(!fail(error)) toast('Role updated'); render(); },
