@@ -20,7 +20,10 @@ const ini = id => (nm(id).split(/\s+/).map(w => w[0]).join('').slice(0,2) || '?'
 const isAdmin = () => S.me && ['founder','admin'].includes(S.me.role);
 const canAI = () => !!S.me && (isAdmin() || !!S.me.ai_access);
 // Company dashboards that sign in with Threads accounts: [key in the database, name shown to admins]. Founders and admins can open all of them.
-const DASHBOARDS = [['ads-control','Ads Control'],['sales','Sales & Replenishment']];
+const DASHBOARDS = [
+  ['ads-control','Ads Control','https://ads.mulmul.co/','Meta ads against real stock, the ad product scorer and audience segments.'],
+  ['sales','Sales & Replenishment','https://aryan-arya05.github.io/mulmul-stock-lookup/sales/','Sales, replenishment, production, inwards and stock aging.'],
+];
 const team = id => S.teams.find(t => t.id === id);
 const myTeams = () => S.teams.filter(t => t.head_id === S.uid || S.tm.some(m => m.team_id === t.id && m.user_id === S.uid));
 const people = () => Object.values(S.profiles).filter(p => p.active).sort((a,b) => a.full_name.localeCompare(b.full_name));
@@ -173,7 +176,7 @@ async function loadBase(){
 }
 
 // ---------- shell ----------
-const APP_VERSION = '2026.11.23-2';
+const APP_VERSION = '2026.11.23-3';
 const ICONS = {
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -183,6 +186,7 @@ const ICONS = {
   files:'<path d="M3 6h6l2 2h10v11H3z"/>',
   people:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.8a3.5 3.5 0 0 1 0 6.4M17.5 14.5a6.5 6.5 0 0 1 4 5.5"/>',
   overview:'<path d="M5 20V10M11 20V4M17 20v-7M22 20H2"/>',
+  dashboards:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
   admin:'<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
   menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
   refresh:'<path d="M20 11a8 8 0 1 0-2.3 6.3M20 4v7h-7"/>',
@@ -194,7 +198,7 @@ const ICONS = {
   assistant:'<path d="M11 3l1.9 5.6L18.5 10.5l-5.6 1.9L11 18l-1.9-5.6L3.5 10.5l5.6-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>'
 };
 const ico = k => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
-const NAV = [['home','Home'],['chat','Chat'],['tasks','Tasks'],['calendar','Calendar'],['notes','Notes'],['files','Files'],['people','People']];
+const NAV = [['home','Home'],['chat','Chat'],['tasks','Tasks'],['calendar','Calendar'],['notes','Notes'],['files','Files'],['people','People'],['dashboards','Dashboards']];
 function renderShell(){
   const nav = NAV.concat(canAI() ? [['assistant','Assistant']] : []).concat(isAdmin() ? [['overview','Overview'],['admin','Admin']] : []);
   const badge = '<span class="badge chatBadge" hidden></span>';
@@ -960,6 +964,23 @@ VIEWS.overview = async el => {
     <div class="grid g2"><div class="card"><h3>Tasks by team</h3>${tbl(o.by_team, [['name','Team'],['open','Open'],['overdue','Overdue'],['done_7d','Done 7d']])}</div>
     <div class="card"><h3>Tasks by person</h3>${tbl(o.by_person, [['name','Person'],['open','Open'],['overdue','Overdue'],['done_7d','Done 7d']])}</div>
     <div class="card"><h3>Most active channels</h3>${tbl(o.channels, [['name','Channel'],['messages_7d','Messages 7d']])}</div></div>`;
+};
+
+// ---------- dashboards ----------
+// Lists the company dashboards this person may open. Founders and admins see all of them; everyone else sees the ones ticked for them in Admin.
+VIEWS.dashboards = async el => {
+  head('Dashboards');
+  let mine = DASHBOARDS;
+  if(!isAdmin()){
+    const { data, error } = await sb.from('dash_access').select('dashboard').eq('user_id', S.uid);
+    if(error){ el.innerHTML = '<div class="card empty">Could not load your dashboards. Try Refresh app.</div>'; return; }
+    const has = new Set((data || []).map(r => r.dashboard));
+    mine = DASHBOARDS.filter(d => has.has(d[0]));
+  }
+  el.innerHTML = mine.length ? `<div class="grid g2">${mine.map(([k,l,u,d]) => `<div class="card"><h3>${esc(l)}</h3><p class="sm mut" style="margin:0 0 12px">${esc(d)}</p>
+      <a class="btn pri" href="${esc(u)}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block">Open</a></div>`).join('')}</div>
+    <p class="sm mut" style="margin-top:12px">Dashboards open in a new tab and ask for your Threads sign-in the first time.</p>`
+    : '<div class="card empty">No dashboards have been shared with you yet. Ask an admin to give you access.</div>';
 };
 
 // ---------- admin ----------
